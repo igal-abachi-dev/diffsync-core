@@ -1,0 +1,27 @@
+[package]
+name = "core-text"
+description = "Text documents: decoding, line index, line rules and per-line alignment metadata."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-base.workspace = true
+encoding_rs.workspace = true
+memchr.workspace = true
+memmap2.workspace = true
+rayon.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "line_index"
+harness = false
+
+[lints]
+workspace = true

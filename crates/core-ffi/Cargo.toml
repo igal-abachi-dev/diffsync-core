@@ -1,0 +1,35 @@
+[package]
+name = "core-ffi"
+description = "C ABI of the diffsync core, built as diffsync_core.dll."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "diffsync_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# Exports `ds_test_panic`, used by the C smoke test and the panic-barrier test.
+test-panic = []
+
+[dependencies]
+core-base.workspace = true
+core-text.workspace = true
+core-diff.workspace = true
+core-vfs.workspace = true
+core-folder.workspace = true
+core-sync.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slotmap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+cc.workspace = true
+
+[lints]
+workspace = true

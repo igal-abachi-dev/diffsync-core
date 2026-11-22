@@ -1,0 +1,17 @@
+---
+source: crates/core-diff/tests/review_corpus.rs
+expression: text
+---
+0 0 Different x1
+1 1 Same x1
+2 2 Different x1
+3 3 Same x2
+5 5 Different x1
+6 6 Same x6
+12 12 Different x1
+13 13 Same x1
+14 14 Different x1
+15 15 Same x4
+19 19 Different x1
+20 20 Same x1
+# same 15 important 6 unimportant 0 sections 6 (6 important)

@@ -1,0 +1,22 @@
+[package]
+name = "core-sync"
+description = "Sync planning and execution, file operations, execution log."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-base.workspace = true
+core-vfs.workspace = true
+core-folder.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

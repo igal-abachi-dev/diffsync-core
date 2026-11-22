@@ -1,0 +1,29 @@
+[package]
+name = "core-folder"
+description = "Folder compare: aligned tree, rules, content compare and views."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-base.workspace = true
+core-text.workspace = true
+core-vfs.workspace = true
+core-glob.workspace = true
+core-diff.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "content"
+harness = false
+
+[lints]
+workspace = true

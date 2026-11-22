@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 16860ef21a19d28a41b5074967f9bbb818aed33e7f457e8f16075ef5ae6aec0c # shrinks to left = ["epsilon five", "zeta six", "epsilon five", "zeta six", "epsilon five", "zeta six", "epsilon five", "zeta six", "epsilon five", "zeta six"], right = ["", "delta four", "", "delta four", "", "delta four", "", "delta four", "", "delta four"], cfg = AlignConfig { kind: Standard, skew_tolerance: 3, use_closeness: None, closeness_same_only: false, never_align_diffs: false, orphans_always_sig: false }
+cc 0cb2fefb0cc5f7aa07548abe416814df45b82c4ea4b78339919f5f1bbb19f868 # shrinks to left = ["theta eight", "eta seven", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;", "int x = 2;"], right = ["b", "int x = 2;", "eta seven"], cfg = AlignConfig { kind: Standard, skew_tolerance: 3, use_closeness: None, closeness_same_only: false, never_align_diffs: false, orphans_always_sig: false }

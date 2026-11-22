@@ -1,0 +1,30 @@
+---
+source: crates/core-diff/tests/review_corpus.rs
+expression: text
+---
+0 0 Same x5
+5 5 Different x1
+6 6 Same x249
+255 255 Different x1
+256 256 Same x249
+505 505 Different x1
+506 506 Same x249
+755 755 Different x1
+756 756 Same x249
+1005 1005 Different x1
+1006 1006 Same x249
+1255 1255 Different x1
+1256 1256 Same x249
+1505 1505 Different x1
+1506 1506 Same x249
+1755 1755 Different x1
+1756 1756 Same x249
+2005 2005 Different x1
+2006 2006 Same x249
+2255 2255 Different x1
+2256 2256 Same x249
+2505 2505 Different x1
+2506 2506 Same x249
+2755 2755 Different x1
+2756 2756 Same x244
+# same 2988 important 12 unimportant 0 sections 12 (12 important)

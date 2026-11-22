@@ -1,0 +1,13 @@
+[package]
+name = "core-base"
+description = "Errors, cancel/pause, progress, CRC-32 and FILETIME ticks shared by every diffsync crate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+crc32fast.workspace = true
+
+[lints]
+workspace = true
