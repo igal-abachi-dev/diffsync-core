@@ -39,6 +39,9 @@ pub mod flag {
     /// The item no longer exists on either side (after a sync or a refresh); the arena keeps
     /// the node so ids stay valid, and views skip it.
     pub const GONE: u16 = 128;
+    /// The user marked the item (and everything below it) as ignored: views hide it unless asked
+    /// to show ignored items, and a sync plan leaves it alone (backlog E11.5-S14.5).
+    pub const IGNORED: u16 = 256;
 }
 
 /// What one side knows about an item. 32 bytes.

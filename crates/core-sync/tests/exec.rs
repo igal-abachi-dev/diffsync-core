@@ -435,7 +435,26 @@ fn a_failure_at_every_write_step_leaves_old_or_new_content_only() {
     }
 }
 
-/// A failed copy asks the question and Retry runs it again.
+/// A transient copy failure is retried by the executor itself (decision D57), without a question.
+#[test]
+fn a_transient_failure_is_retried_silently() {
+    let (l, r) = (MemVfs::new(), MemVfs::new());
+    l.add_file("f.txt", b"data", T0);
+    let rf = fault(r.clone());
+    rf.fail_nth(Op::CreateTemp, 1, ErrorKind::SharingViolation);
+    let c = shared(compare(arc(l), rf.clone(), FolderRules::default()));
+    let plan = plan_for(&c.read(), Preset::UpdateRight);
+    let fast = ExecOverrides {
+        copy_retry_wait_ms: Some(10),
+        ..ExecOverrides::default()
+    };
+    let job = start_sync(&plan, &c, fast, None).unwrap();
+    let res = job.wait();
+    assert_eq!((res.done, res.failed, res.skipped), (1, 0, 0), "{res:?}");
+    assert_eq!(r.read("f.txt").unwrap(), b"data");
+}
+
+/// With the executor's own retries off, a failed copy asks the question and Retry runs it again.
 #[test]
 fn a_failed_copy_can_be_retried() {
     let (l, r) = (MemVfs::new(), MemVfs::new());
@@ -444,7 +463,11 @@ fn a_failed_copy_can_be_retried() {
     rf.fail_nth(Op::CreateTemp, 1, ErrorKind::SharingViolation);
     let c = shared(compare(arc(l), rf.clone(), FolderRules::default()));
     let plan = plan_for(&c.read(), Preset::UpdateRight);
-    let job = start_sync(&plan, &c, ExecOverrides::default(), None).unwrap();
+    let no_retries = ExecOverrides {
+        copy_retries: Some(0),
+        ..ExecOverrides::default()
+    };
+    let job = start_sync(&plan, &c, no_retries, None).unwrap();
     let q = wait_question(&job);
     assert_eq!(q.kind, QuestionKind::Failed);
     job.answer(q.id, Answer::Retry).unwrap();
@@ -483,4 +506,32 @@ fn cancel_at_every_step_is_clean() {
             rc.paths()
         );
     }
+}
+
+/// Decision D64: the emptiness check and the removal of a folder are one call. A file that appears
+/// after the executor decided to delete the folder (here: just before its delete call) is kept,
+/// and so is the folder; it used to be removed together with the folder.
+#[test]
+fn a_file_created_while_a_folder_is_being_deleted_is_never_deleted_with_it() {
+    use core_vfs::Op;
+    let (l, r) = (MemVfs::new(), MemVfs::new());
+    r.add_file("d/old.txt", b"1", T0);
+    let (rc, rc2) = (r.clone(), r.clone());
+    let fr = core_vfs::FaultVfs::new(r);
+    // delete #1 is old.txt, delete #2 is the folder itself
+    fr.on_nth(
+        Op::Delete,
+        2,
+        std::sync::Arc::new(move |_| {
+            rc.add_file("d/arrived.txt", b"precious", T0);
+        }),
+    );
+    let right: std::sync::Arc<dyn core_vfs::Vfs> = std::sync::Arc::new(fr);
+    let c = shared(compare(arc(l), right, FolderRules::default()));
+    let plan = plan_for(&c.read(), Preset::MirrorToRight);
+    let res = execute(&plan, &c, ExecOverrides::default());
+    assert_eq!(res.failed, 0, "{res:?}");
+    assert_eq!(res.kept, 1, "{res:?}");
+    // the folder is still there with the file that arrived
+    assert_eq!(rc2.read("d/arrived.txt").unwrap(), b"precious");
 }

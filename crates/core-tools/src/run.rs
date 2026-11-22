@@ -10,13 +10,15 @@ use std::sync::Arc;
 use core_base::CancelToken;
 use core_diff::udiff::{self, HunkOptions};
 use core_folder::udiff::{
-    DiffStyle, FolderDiff, FolderDiffOptions, diff_file_pair, diff_folders, render,
+    DiffStyle, FileChange, FileDiff, FolderDiff, FolderDiffOptions, Report, diff_file_pair,
+    diff_folders, render,
 };
 use core_glob::IgnoreList;
 use core_vfs::{VPath, Vfs};
 use serde_json::json;
 
-use crate::diffargs::{Dialect, DiffRequest};
+use crate::diffargs::{Dialect, DiffRequest, Emit};
+use crate::mbox::render_mbox;
 
 /// What the wrapper may adjust besides the flags.
 #[derive(Debug, Clone)]
@@ -40,7 +42,8 @@ impl Default for RunOptions {
 }
 
 /// The result of a run.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiffOutput {
     /// What goes to standard output.
     pub stdout: String,
@@ -82,7 +85,7 @@ fn ticks(t: std::time::SystemTime) -> i64 {
 }
 
 fn folder_options(req: &DiffRequest, ro: &RunOptions) -> FolderDiffOptions {
-    let git = req.dialect == Dialect::Git;
+    let git = req.dialect == Dialect::Git || req.emit == Emit::Mbox;
     let mut text = udiff::diff_text_options(req.alignment, req.whitespace, req.ignore_case);
     text.eol = req.eol;
     let mut exclude = req.exclude.clone();
@@ -116,16 +119,90 @@ fn folder_options(req: &DiffRequest, ro: &RunOptions) -> FolderDiffOptions {
     }
 }
 
+/// The old text of a file of the report (for SEARCH/REPLACE blocks, which grow until unique).
+type OldText<'a> = &'a dyn Fn(&FileDiff) -> Option<String>;
+
+fn search_replace(req: &DiffRequest, fd: &FolderDiff, old: OldText<'_>) -> (String, String) {
+    let (mut out, mut err) = (String::new(), String::new());
+    for f in fd.files() {
+        let name = if f.path.is_empty() {
+            if f.change == FileChange::Deleted {
+                req.left.clone()
+            } else {
+                req.right.clone()
+            }
+        } else {
+            f.path.clone()
+        };
+        if f.binary || f.too_large {
+            err.push_str(&format!(
+                "diffsync: {name}: {}, not written as SEARCH/REPLACE
+",
+                if f.binary {
+                    "binary file"
+                } else {
+                    "file too large"
+                }
+            ));
+            continue;
+        }
+        if f.hunks
+            .iter()
+            .any(|h| h.lines.iter().any(|l| l.eol == core_text::LineEnding::None))
+        {
+            err.push_str(&format!(
+                "diffsync: {name}: a file ends without a newline; SEARCH/REPLACE cannot say that, the final newline may differ after applying
+"
+            ));
+        }
+        let old_text = old(f).unwrap_or_default();
+        if f.change == FileChange::Deleted {
+            out.push_str(&core_diff::searchreplace::render_block(
+                Some(&name),
+                &old_text,
+                "",
+            ));
+            err.push_str(&format!(
+                "diffsync: {name}: deleted file; the block empties it, deleting is the caller's step
+"
+            ));
+        } else {
+            out.push_str(&core_diff::searchreplace::render_hunks(
+                &name, &old_text, &f.hunks,
+            ));
+        }
+    }
+    (out, err)
+}
+
 fn finish(
     req: &DiffRequest,
     fd: &FolderDiff,
     opts: &FolderDiffOptions,
     ignored: bool,
+    old: OldText<'_>,
 ) -> DiffOutput {
+    let mut stderr = String::new();
     let mut stdout = if req.quiet {
         String::new()
     } else {
-        render(fd, opts)
+        match req.emit {
+            Emit::Diff => render(fd, opts),
+            Emit::SearchReplace => {
+                let (o, e) = search_replace(req, fd, old);
+                stderr = e;
+                o
+            }
+            Emit::Mbox => {
+                let mut o = opts.clone();
+                o.report = Report::Stat;
+                let stat = render(fd, &o);
+                o.report = Report::Patch;
+                let patch = render(fd, &o);
+                let now = core_diff::udiff::format_mail_time(ticks(std::time::SystemTime::now()));
+                render_mbox(&req.mail, &stat, &patch, &now)
+            }
+        }
     };
     let gnu_code = fd.exit_code();
     let exit_code = if gnu_code == 2 || req.dialect == Dialect::Gnu || req.exit_code_flag {
@@ -148,7 +225,7 @@ fn finish(
     });
     DiffOutput {
         stdout,
-        stderr: String::new(),
+        stderr,
         exit_code,
         json: json.to_string(),
         ignored,
@@ -187,7 +264,15 @@ pub fn run(req: &DiffRequest, ro: &RunOptions) -> DiffOutput {
                 (Err(e), _) | (_, Err(e)) => return fail(&format!("diff: {e}")),
             };
             match diff_folders(lv, &VPath::root(), rv, &VPath::root(), &opts, &ro.cancel) {
-                Ok(fd) => finish(req, &fd, &opts, false),
+                Ok(fd) => {
+                    let read_old = |f: &FileDiff| {
+                        std::fs::read_to_string(
+                            lp.join(f.path.replace('/', std::path::MAIN_SEPARATOR_STR)),
+                        )
+                        .ok()
+                    };
+                    finish(req, &fd, &opts, false, &read_old)
+                }
                 Err(e) => fail(&format!("diff: {e}")),
             }
         }
@@ -229,7 +314,7 @@ fn run_files(
                 entries: Vec::new(),
                 same_files: 1,
             };
-            return finish(req, &fd, &opts, true);
+            return finish(req, &fd, &opts, true, &|_| None);
         }
     }
     let new_file = req.new_file || req.dialect == Dialect::Git;
@@ -268,8 +353,11 @@ fn run_files(
         .cloned()
         .unwrap_or_else(|| req.right.clone());
     opts.header_line = false;
+    let old_text = old
+        .as_ref()
+        .map(|(b, _)| String::from_utf8_lossy(b).into_owned());
     match diff_file_pair(old, new, &opts) {
-        Ok(fd) => finish(req, &fd, &opts, false),
+        Ok(fd) => finish(req, &fd, &opts, false, &|_| old_text.clone()),
         Err(e) => fail(&format!("diff: {e}")),
     }
 }
@@ -295,7 +383,7 @@ pub fn run_texts(req: &DiffRequest, old: &str, new: &str, ro: &RunOptions) -> Di
         Some((new.as_bytes().to_vec(), now)),
         &opts,
     ) {
-        Ok(fd) => finish(req, &fd, &opts, false),
+        Ok(fd) => finish(req, &fd, &opts, false, &|_| Some(old.to_string())),
         Err(e) => fail(&format!("diff: {e}")),
     }
 }

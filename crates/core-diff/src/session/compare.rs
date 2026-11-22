@@ -342,6 +342,33 @@ impl TextCompare {
         Ok(())
     }
 
+    /// The two loaded documents, or `None` while they are loading.
+    pub fn documents(&self) -> Option<[Arc<TextDocument>; 2]> {
+        let g = self.shared.docs.read();
+        let d = g.as_ref()?;
+        Some([d.left.clone(), d.right.clone()])
+    }
+
+    /// The options of the compare.
+    pub fn options(&self) -> TextOptions {
+        self.shared.options.read().clone()
+    }
+
+    /// Starts the compare again on two new documents, keeping the handle and the options (the
+    /// editor's way to show an edit: backlog E11.5-S14.1). The generation changes, the old rows go,
+    /// and loading and aligning run on the worker as for `start`.
+    pub fn replace_docs(&self, left: DocSpec, right: DocSpec) {
+        self.cancel();
+        self.wait();
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.shared.store.clear();
+        self.shared.intra.lock().clear();
+        self.shared.aligning_rows.store(0, Ordering::Relaxed);
+        *self.shared.pending.lock() = Some([left.clone(), right.clone()]);
+        *self.shared.state.lock() = State::Loading;
+        self.spawn(Some([left, right]), false);
+    }
+
     /// Copies display rows `first..` into `out`; never waits on the aligner for longer than
     /// one batch append.
     pub fn rows(&self, first: u32, out: &mut [DiffRow]) -> usize {

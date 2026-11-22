@@ -87,6 +87,16 @@ pub struct ExecOptions {
     pub safe_copy: bool,
     pub copy_ctime: bool,
     pub verify: bool,
+    /// Flush every copy to the storage device before it replaces its destination (decision D65).
+    pub durable_copy: bool,
+    /// A log that was asked for (`log_dir`) must work: when it cannot be created the job does not
+    /// start, and when a line cannot be written the job stops after the current step (decision
+    /// D66). Without this an audit trail could silently be missing for a destructive job.
+    pub log_required: bool,
+    /// Tries again after a transient copy failure (a locked file, a dropped share): robocopy's `/R`.
+    pub copy_retries: u32,
+    /// Milliseconds between the tries (robocopy's `/W`).
+    pub copy_retry_wait_ms: u32,
     pub use_recycle_bin: bool,
     /// Folder for the JSON-lines execution log; `None` = no log.
     pub log_dir: Option<PathBuf>,
@@ -101,6 +111,10 @@ impl Default for ExecOptions {
             safe_copy: true,
             copy_ctime: false,
             verify: false,
+            durable_copy: true,
+            log_required: true,
+            copy_retries: 2,
+            copy_retry_wait_ms: 1000,
             use_recycle_bin: false,
             log_dir: None,
             job_name: "job".into(),
@@ -130,6 +144,10 @@ pub struct ExecOverrides {
     pub job_name: Option<String>,
     pub verify: Option<bool>,
     pub use_recycle_bin: Option<bool>,
+    pub durable_copy: Option<bool>,
+    pub log_required: Option<bool>,
+    pub copy_retries: Option<u32>,
+    pub copy_retry_wait_ms: Option<u32>,
 }
 
 impl ExecOverrides {
@@ -142,6 +160,18 @@ impl ExecOverrides {
         }
         if let Some(v) = self.use_recycle_bin {
             o.use_recycle_bin = v;
+        }
+        if let Some(v) = self.durable_copy {
+            o.durable_copy = v;
+        }
+        if let Some(v) = self.log_required {
+            o.log_required = v;
+        }
+        if let Some(v) = self.copy_retries {
+            o.copy_retries = v;
+        }
+        if let Some(v) = self.copy_retry_wait_ms {
+            o.copy_retry_wait_ms = v;
         }
         o
     }
@@ -682,6 +712,9 @@ fn perform(
                 safe_copy: opts.safe_copy,
                 copy_ctime: opts.copy_ctime,
                 verify: opts.verify,
+                durable: opts.durable_copy,
+                retries: opts.copy_retries,
+                retry_wait_ms: opts.copy_retry_wait_ms,
             };
             let prog = |done: u64, _total: u64| {
                 shared.inner.lock().progress.bytes_done = base_bytes + done;
@@ -709,10 +742,27 @@ fn perform(
                 .map_err(|e| fail(&e))?;
         }
         StepKind::Delete => {
+            if step.only_if_empty && !opts.use_recycle_bin {
+                // decision: D64 (was D42): the folder is removed by a call that refuses a folder
+                // with anything in it, so a file created a moment ago is never deleted with it
+                let removed = step
+                    .dst
+                    .vfs
+                    .remove_dir_if_empty(&step.dst.path)
+                    .map_err(|e| fail(&e))?;
+                return Ok(if removed {
+                    Outcome::Done
+                } else {
+                    Outcome::Kept(if step.filters_active {
+                        "kept (contains excluded items)"
+                    } else {
+                        "kept (contains items added after the compare)"
+                    })
+                });
+            }
             if step.only_if_empty {
-                // decision: D42: a folder goes only when nothing is left in it (§9.4). The
-                // listing and the delete are two calls: an item created in between is not
-                // protected (a non-recursive remove is a v2 item for the Vfs trait).
+                // to the Recycle Bin: the folder and anything in it can be restored, so a
+                // look-then-delete is acceptable here
                 let mut left = Vec::new();
                 step.dst
                     .vfs
@@ -761,6 +811,10 @@ fn run_job(
         Some(Ok(l)) => Some(l),
         Some(Err(e)) => {
             // an audit log that was asked for and cannot be written is reported, not dropped
+            // (decision D66: and with `log_required` the job does not start)
+            if opts.log_required {
+                result.aborted = true;
+            }
             result.errors.push(StepFailure {
                 path: opts
                     .log_dir
@@ -773,6 +827,9 @@ fn run_job(
         }
         None => None,
     };
+    if result.aborted {
+        return result; // the log is required and could not be created: nothing has been done
+    }
     let mut skip_all = false;
     let mut base_bytes = 0u64;
     // steps that completed, and folders this job really created
@@ -904,6 +961,23 @@ fn run_job(
                         }
                     }
                 }
+            }
+        }
+        // decision D66: no step runs after the audit trail broke
+        if opts.log_required {
+            if let Some(why) = log.as_ref().and_then(JobLog::write_error) {
+                result.aborted = true;
+                result.errors.push(StepFailure {
+                    path: opts
+                        .log_dir
+                        .as_ref()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default(),
+                    message: format!(
+                        "the execution log can no longer be written ({why}); the job was stopped"
+                    ),
+                });
+                break 'steps;
             }
         }
         let snapshot = {

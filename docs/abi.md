@@ -5,9 +5,9 @@ The C ABI of `diffsync_core.dll` (crate `core-ffi`). The header `include/diffsyn
 checked in; CI runs `cargo xtask bindings --check`. This page explains the conventions behind
 them. When this page and `plan.md` §10 disagree, `plan.md` wins.
 
-ABI version: **1.0** (`ds_abi_version()` = `major << 16 | minor`). Frozen at E10-S3 after the
+ABI version: **1.2** (`ds_abi_version()` = `major << 16 | minor`). 1.0 was frozen at E10-S3 after the
 Avalonia proof (`tools/diffsync-testapp`, `bindings/csharp`): see "Versioning policy" for what
-may still change.
+may still change. 1.1 added the integration exports, 1.2 the editing and patch exports (both below).
 
 ## Conventions
 
@@ -194,6 +194,55 @@ surrogate is `DS_E_INVALID_ARG` (a lossy conversion would name a different file)
 that is empty means "none given" (the folder from `ds_init`, if any); a relative one is
 `DS_E_INVALID_ARG`.
 
+## Integration exports (ABI 1.1, backlog E11.5)
+
+Added in 1.1; nothing of 1.0 changed. Walk-through of the callers: `docs/integration.md`. Every JSON
+report is UTF-8 in a `DsBuf` freed with `ds_buf_free`. A diff that finds a difference, or cannot read
+a file, is still a successful *call*: the report carries the GNU exit code and the text for standard
+error. A malformed request is `DS_E_INVALID_ARG`.
+
+| Function | Notes |
+|---|---|
+| `ds_diff_run(request, &report)` | Runs a `diff` / `git diff` command line on the local file system. Request `{"args":["-ru","a","b"], "dialect":"gnu"\|"git", "ignore":"<pattern list>", "ignoreLockFiles":false, "maxFileBytes":536870912}`. Report `{"stdout","stderr","exitCode","json","ignored"}`; `json` is a JSON document in a string: `{"exitCode","different","ignored","summary":{"filesChanged","insertions","deletions","sameFiles"},"entries":[...]}` where an entry is `{"kind":"file","path","change":"modified"\|"added"\|"deleted","binary","tooLarge","hunks":[{"oldFirst","oldCount","newFirst","newCount","func","lines":[{"op":"+"\|"-"\|" ","text","eol"}]}],"additions","deletions",...}`, `{"kind":"onlyIn",...}`, `{"kind":"commonDir"}`, `{"kind":"typeConflict"}` or `{"kind":"error"}`. Supported flags: `docs/integration.md` §1. Synchronous: call off the UI thread |
+| `ds_diff_texts(request, &report)` | The same for two texts: `{"args":["-u"], "left":"..", "right":"..", "leftName":"old", "rightName":"new", "dialect":"gnu"}` (`args` are flags only) |
+| `ds_tool_parse_args(args_json, &report)` | How another program started the tool: a JSON array of arguments in, `{"invocation":{"kind":"compare"\|"merge"\|"gitExternalDiff"\|"selectLeft"\|"compareSelected","value":{...}},"unknown":[...]}` out. A command line the protocol does not understand is `DS_E_INVALID_ARG` |
+| `ds_tool_default_ignore(&text)` | `*package-lock.json,*gemfile.lock,*podfile.lock,*cartfile.resolved` |
+| `ds_tool_is_ignored(patterns, path, &flag)` | Whether the path matches the list (comma, semicolon or line separated; case ignored on Windows; matches on the full path) |
+| `ds_merge3(request, &report)` | **Stub.** `{"base","local","remote"}` texts; `{"outcome":"clean","text","reason"}` when only one side changed or both are equal, else `{"outcome":"conflict","reason"}` |
+| `ds_merge_files(request, &report)` | The merge-tool contract on files: `{"local","remote","base","output"}`; writes `output` and reports `{"exitCode":0}` only for a clean merge; `1` not merged (the output is left alone); `2` trouble |
+| `ds_shell_selection_set(path)` / `_get(&json)` / `_clear()` | The Explorer "left side": an absolute path in, `{"left","chosenAt"}` out (an empty buffer when none; a side older than a day or no longer existing is none). Stored in `%LOCALAPPDATA%\DiffSync\selection.json` (`DIFFSYNC_STATE_DIR` moves it) |
+| `ds_volume_info(path, &DsVolumeInfo)` | Free and total bytes of the volume (Windows; `DS_E_UNSUPPORTED` elsewhere) |
+| `ds_text_get_folds(h, context, important_only, first, count, out, &written, &total)` | The runs of rows the Context view hides (rows farther than `context` from a difference); `total` is the number of folds |
+| `ds_text_get_section_kinds(h, first, count, out_u8, &written)` | Per section: 0 insert, 1 delete, 2 replace |
+| `ds_text_find_section(h, from_row, dir, kind, &row)` | The next (`dir` 0) or previous (1) section of that kind; `DS_E_NOT_FOUND` at the ends |
+| `ds_text_find(h, query_utf8, flags, from_row, dir, &DsFindHit)` | `flags`: 1 case sensitive, 2 whole word, 4 regular expression, 8 skip left, 16 skip right; `DS_E_NOT_FOUND` when there is no match |
+
+New option keys (additive): text options `eol` (`"ignore"` default, `"strict"`, `"crlfAsLf"`); exec
+and file-operation options `copyRetries` (default 2) and `copyRetryWaitMs` (default 1000).
+
+## Editing, patches and folder items (ABI 1.2, backlog E11.5-S14, S16, S17)
+
+Added in 1.2; nothing of 1.0 or 1.1 changed. All JSON is UTF-8; reports are in a `DsBuf` freed with
+`ds_buf_free`. Walk-through: `docs/integration.md` §6 and §7.
+
+| Function | Notes |
+|---|---|
+| `ds_text_edit(session, request, &report)` | One edit of the text under the same handle. `op`: `copyRows {from, firstRow, lastRow}`, `copySection {from, section}`, `copyAll {from, withFormat}`, `replaceLines {side, firstLine, removeLines, text, refresh}`, `replaceRange {side, startLine, startColumn, endLine, endColumn, text, refresh}` (0-based lines, UTF-16 columns: what a piece-tree buffer reports), `applyEdits {side, edits[], refresh}` (a batch against the current text, one undo step), `setText {side, text, refresh}`, `refresh`, `undo {side}`, `redo {side}`, `convert {side, eol: crlf\|lf\|cr, encoding}`, `reinterpret {side, encoding, discardChanges}`, `state`. `side`/`from` are `left` or `right`. Report `{changed, removed, inserted, stale, generation, left, right}` with per side `{lines, dirty, canUndo, canRedo, encoding, bom, endingCounts, mixedEndings, defaultEol, lossy, revision}`. After an edit the compare restarts on the new text (status `Aligning`, `generation` changes): pull rows again as after a recompare. `refresh: false` skips the restart (`stale: true`); copy operations bring the compare up to date themselves. A text the encoding cannot hold, a lossily read file and a binary side are `DS_E_ENCODING` / `DS_E_UNSUPPORTED` |
+| `ds_text_save(session, request, &report)` | `{side, path?, mode: "atomic"\|"inPlace", backupSuffix?, overwriteChanged, writeReadonly, overwriteExisting, eol?, encoding?}`. Writes the side in its encoding, byte order mark and line endings through a temporary file and a rename (D63); `DS_E_CHANGED_SINCE_COMPARE` when the file changed after it was read, `DS_E_ALREADY_EXISTS` for a Save As over another file. Report `{path, bytes, backup, size, mtime, replaced, state}` |
+| `ds_patch_apply(request, &report)` | Applies a unified or git mailbox patch, SEARCH/REPLACE blocks, JSON Patch or a byte script to files under `root` or to a `text`: `{patch, format: auto\|unified\|searchReplace\|jsonPatch\|byteScript, root, target, text, strip, reverse, dryRun, fuzz, ignoreWhitespace, partial, maxFileBytes}`. All or nothing unless `partial`. A patch that does not apply is a successful call with `ok: false` and the reason per hunk, block or operation |
+| `ds_json_patch(request, &report)` | `{"op":"diff","left","right"}` → `{"ok":true,"patch":[...]}`; `{"op":"apply","doc","patch"}` → `{"ok":true,"doc"}` or `{"ok":false,"error","index"}` |
+| `ds_bytes_diff(request, &report)` | `{left, right, format: fc\|cmp\|script, maxRuns}` → `{identical, leftLen, rightLen, differingBytes, runs[{offset,left,right}], truncated, text}` |
+| `ds_folder_set_ignored(folder, nodes, n, ignored)` | Marks items (and what is below them) as ignored, or clears the mark; views hide them unless `showIgnored`, a sync plan skips them |
+| `ds_fileops_rename(item, new_name, options, cb, user, &job)` | Renames a file or folder as a job; the name is validated (§9.8), must not exist, a change of case alone is allowed where names ignore case |
+
+New option keys (additive): view `filter` values `noOrphans differencesNoOrphans leftOrphans
+rightOrphans leftNewerOrphans rightNewerOrphans` (with the older `all differences same orphans
+leftNewer rightNewer` these are every mode of the reference products' filter menus), view
+`ignoreUnimportant` and `showIgnored`; exec and file-operation options `durableCopy` (default true:
+flush before the rename, D65) and `logRequired` (default true: no log, no job, D66); folder option
+`allowUncheckedRoots` (default false, D68). Argument forms of the diff exports: `--search-replace`,
+`--format-patch` with `--subject`, `--author`, `--patch-date`, `--message`.
+
 ## Struct layouts
 
 All structs are `repr(C)`; sizes are asserted in the crate and again in `tests/c-smoke`.
@@ -207,6 +256,9 @@ All structs are `repr(C)`; sizes are asserted in the crate and again in `tests/c
 | `DsSideInfo` | 32 | `size` u64, `mtime` i64 (FILETIME ticks), `ctime` i64 (0 in v1), `attrs` u32, `present` u8, `kind` u8 (0 file, 1 folder, 2 link), `reserved` u16 |
 | `DsDirRow` | 88 | `node`, `parent`, `depth` u16, `status` u8, `flags` u8, `child_count`, `left` (offset 16), `right` (offset 48), `diff_count` (80), `orphan_count` (84) |
 | `DsPlanAction` | 16 | `kind` u8, `is_folder` u8, `flags` u16 (bit 0 delete only if empty, bit 1 frees a name), `node`, `bytes` u64 |
+| `DsFold` | 8 | `first_row`, `row_count` |
+| `DsFindHit` | 20 | `row`, `line`, `start`, `end` (UTF-16 units), `side` u8 (0 left, 1 right), 3 pad |
+| `DsVolumeInfo` | 16 | `free_bytes` u64, `total_bytes` u64 |
 | `DsQuestion` | 16 | `id` u64, `kind` u32 (0 changed since compare, 1 failed), `step` |
 
 `DsTextStatus`, `DsDocInfo`, `DsFolderStatus`, `DsPlanSummary`, `DsJobStatus` are plain counters
@@ -241,8 +293,7 @@ documented in `include/diffsync.h`.
 
 ## Versioning policy
 
-* The ABI version is `major << 16 | minor`. **Additive** changes (a new function, a new field at
-  the end of an output struct, a new enum value, a new status code, a new JSON option) bump the
+* The ABI version is `major << 16 | minor`. **Additive** changes (a new function, a new struct type, a new enum value, a new status code, a new JSON option) bump the
   minor. A **breaking** change (removing or renumbering anything, reordering fields, changing a
   signature) bumps the major and is avoided.
 * Node numbers (`ds_folder_refresh`, `ds_folder_compare_content`, the selection of `ds_sync_plan`) must exist in the tree: a number outside it is `DS_E_INVALID_ARG`.

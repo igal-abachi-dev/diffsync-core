@@ -38,6 +38,10 @@ impl SelectionStore {
 
     /// The store of the current user. `None` when no local data folder can be found.
     pub fn for_current_user() -> Option<SelectionStore> {
+        // `DIFFSYNC_STATE_DIR` moves the store (tests, portable installs)
+        if let Some(dir) = std::env::var_os("DIFFSYNC_STATE_DIR") {
+            return Some(SelectionStore::in_dir(&PathBuf::from(dir)));
+        }
         let base = if cfg!(windows) {
             std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
         } else {

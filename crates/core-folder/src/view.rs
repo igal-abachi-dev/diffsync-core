@@ -22,6 +22,18 @@ pub enum ViewFilter {
     Orphans,
     LeftNewer,
     RightNewer,
+    /// Everything except orphans ("no orphans").
+    NoOrphans,
+    /// Differences except orphans ("diff but no orphans").
+    DifferencesNoOrphans,
+    /// Only items that exist on the left alone.
+    LeftOrphans,
+    /// Only items that exist on the right alone.
+    RightOrphans,
+    /// Newer on the left, and orphans of both sides.
+    LeftNewerOrphans,
+    /// Newer on the right, and orphans of both sides.
+    RightNewerOrphans,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,20 +58,37 @@ pub struct FolderView {
     search: Vec<u16>,
     sort: SortOrder,
     expanded: Vec<u64>,
+    /// Treat differences that are only unimportant as equal ("ignore unimportant differences").
+    ignore_unimportant: bool,
+    /// Show items the user marked as ignored (hidden by default).
+    show_ignored: bool,
     /// Per node: does it or anything below it match the filter and search?
     shown: Vec<bool>,
     visible: Vec<NodeId>,
     generation: u64,
 }
 
-fn status_matches(f: ViewFilter, s: Status) -> bool {
+fn status_matches(f: ViewFilter, s: Status, ignore_unimportant: bool) -> bool {
+    // "ignore unimportant differences": a file that differs only in unimportant ways is the same
+    let s = if ignore_unimportant && s == Status::UnimportantDiff {
+        Status::Same
+    } else {
+        s
+    };
+    let orphan = matches!(s, Status::LeftOrphan | Status::RightOrphan);
     match f {
         ViewFilter::All => true,
         ViewFilter::Differences => s != Status::Same,
         ViewFilter::Same => s == Status::Same,
-        ViewFilter::Orphans => matches!(s, Status::LeftOrphan | Status::RightOrphan),
+        ViewFilter::Orphans => orphan,
         ViewFilter::LeftNewer => s == Status::LeftNewer,
         ViewFilter::RightNewer => s == Status::RightNewer,
+        ViewFilter::NoOrphans => !orphan,
+        ViewFilter::DifferencesNoOrphans => s != Status::Same && !orphan,
+        ViewFilter::LeftOrphans => s == Status::LeftOrphan,
+        ViewFilter::RightOrphans => s == Status::RightOrphan,
+        ViewFilter::LeftNewerOrphans => s == Status::LeftNewer || orphan,
+        ViewFilter::RightNewerOrphans => s == Status::RightNewer || orphan,
     }
 }
 
@@ -124,6 +153,26 @@ impl FolderView {
         self.rebuild(tree);
     }
 
+    pub fn ignore_unimportant(&self) -> bool {
+        self.ignore_unimportant
+    }
+
+    pub fn show_ignored(&self) -> bool {
+        self.show_ignored
+    }
+
+    /// Treats unimportant-only differences as equal for the filter, and rebuilds.
+    pub fn set_ignore_unimportant(&mut self, tree: &Tree, on: bool) {
+        self.ignore_unimportant = on;
+        self.rebuild(tree);
+    }
+
+    /// Shows (or hides again) the items the user marked as ignored, and rebuilds.
+    pub fn set_show_ignored(&mut self, tree: &Tree, on: bool) {
+        self.show_ignored = on;
+        self.rebuild(tree);
+    }
+
     pub fn set_sort(&mut self, tree: &Tree, sort: SortOrder) {
         self.sort = sort;
         self.rebuild(tree);
@@ -143,10 +192,20 @@ impl FolderView {
     fn compute_shown(&mut self, tree: &Tree) {
         let n = tree.len();
         self.shown = vec![false; n];
+        // an ignored folder hides everything below it; parents come before children
+        let mut hidden = vec![false; n];
+        if !self.show_ignored {
+            for id in 1..n {
+                let node = tree.node(id as NodeId);
+                hidden[id] = node.has(crate::tree::flag::IGNORED)
+                    || (node.parent != NONE && hidden[node.parent as usize]);
+            }
+        }
         for id in (1..n).rev() {
             let node = tree.node(id as NodeId);
             let own = !node.has(crate::tree::flag::GONE)
-                && status_matches(self.filter, node.status)
+                && !hidden[id]
+                && status_matches(self.filter, node.status, self.ignore_unimportant)
                 && self.name_matches(tree, id as NodeId);
             if own || self.shown[id] {
                 self.shown[id] = true;

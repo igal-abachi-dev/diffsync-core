@@ -53,6 +53,10 @@ pub struct FolderRules {
     pub include_system: bool,
     /// Allow content compare of cloud placeholders (it downloads them; D17).
     pub compare_offline_files: bool,
+    /// Allow sync and file operations although the volume gives no file IDs to prove that one
+    /// folder is not inside the other (FAT, exFAT, some network shares). Off by default
+    /// (decision D68).
+    pub allow_unchecked_roots: bool,
     pub text: TextOptions,
 }
 
@@ -80,6 +84,7 @@ impl Default for FolderRules {
             include_hidden: true,
             include_system: true,
             compare_offline_files: false,
+            allow_unchecked_roots: false,
             text: TextOptions::default(),
         }
     }
@@ -108,6 +113,7 @@ const KNOWN_KEYS: &[&str] = &[
     "includeHidden",
     "includeSystem",
     "compareOfflineFiles",
+    "allowUncheckedRoots",
     "text",
 ];
 

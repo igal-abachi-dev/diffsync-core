@@ -501,9 +501,12 @@ fn copy_vs_robocopy() {
             *b = (i.wrapping_mul(2654435761) >> 13) as u8;
         }
         std::fs::write(dir.path().join(&name), &data).unwrap();
+        // the gate compares the copy engine with robocopy, which does not flush to the device; the
+        // default `durable: true` (decision D65) is timed and printed separately below
         let opts = CopyOptions {
             overwrite: true,
             safe_copy: true,
+            durable: false,
             ..CopyOptions::default()
         };
         let run = |threshold: u64| {
@@ -602,6 +605,26 @@ fn copy_vs_robocopy() {
                 "BUDGET copy_1gib_vs_robocopy {ratio:.2} 1.05 {}",
                 if ratio <= 1.05 { "PASS" } else { "FAIL" }
             );
+            // after the gate, so its flush cannot disturb the measurement
+            let durable = CopyOptions {
+                durable: true,
+                ..opts
+            };
+            let _ = std::fs::remove_file(dir.path().join("out.bin"));
+            let t = std::time::Instant::now();
+            v.copy_file(
+                &p(&name),
+                &p("out.bin"),
+                &durable,
+                &|_, _| {},
+                &CancelToken::new(),
+            )
+            .unwrap();
+            eprintln!(
+                "durable copy (flushed to the device before the rename, the default): {:.2} s",
+                t.elapsed().as_secs_f64()
+            );
+            let _ = std::fs::remove_file(dir.path().join("out.bin"));
         }
     }
 }
@@ -760,4 +783,16 @@ fn seek_penalty_matches_the_physical_disk_type() {
         checked += 1;
     }
     eprintln!("checked {checked} drive(s)");
+}
+
+/// Backlog E11.5-S9.3: the status bar's free space.
+#[test]
+fn volume_space_reports_free_and_total_bytes() {
+    let d = tempfile::tempdir().unwrap();
+    let (free, total) = core_vfs::volume_space(d.path()).unwrap();
+    assert!(
+        total > 0 && free > 0 && free <= total,
+        "free {free} of {total}"
+    );
+    assert!(core_vfs::volume_space(&d.path().join("no").join("such")).is_err());
 }

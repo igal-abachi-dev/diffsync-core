@@ -19,6 +19,8 @@ use crate::util::{finish, json_arg, os_path, out, units, write_buffer};
 pub struct TextObj {
     pub tc: Arc<TextCompare>,
     bridge: Arc<Bridge>,
+    /// The editor, created by the first edit (backlog E11.5-S14).
+    pub edit: parking_lot::Mutex<Option<crate::edit::EditState>>,
 }
 
 impl TextObj {
@@ -113,6 +115,7 @@ pub unsafe extern "C" fn ds_text_open(
         let h = registry::insert(Object::Text(Arc::new(TextObj {
             tc,
             bridge: bridge.clone(),
+            edit: parking_lot::Mutex::new(None),
         })));
         bridge.arm(h);
         *outp = h;

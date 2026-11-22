@@ -1,6 +1,7 @@
 // Public, blittable mirrors of the ABI structs (docs/abi.md, "Struct layouts"). Their layout is
 // identical to the generated Ds* structs, so a pooled array of these is filled by the core with no
 // copy and no marshalling.
+using System;
 using System.Runtime.InteropServices;
 
 namespace DiffSync.Native;
@@ -154,3 +155,15 @@ public readonly record struct Question(ulong Id, QuestionKind Kind, uint Step, s
 
 /// <summary>The answer to a question (<c>ds_job_answer</c>).</summary>
 public enum Answer : byte { Retry = 0, Skip = 1, SkipAll = 2, Abort = 3 }
+
+/// <summary>A run of rows the Context view hides ("36 filtered lines").</summary>
+public readonly record struct Fold(uint FirstRow, uint RowCount);
+
+/// <summary>What a difference section does (Beyond Compare's insert, delete and replacement).</summary>
+public enum SectionKind : byte { Insert = 0, Delete = 1, Replace = 2 }
+
+/// <summary>A match of <see cref="TextCompare.Find"/>: the row, the side and line, and the range in UTF-16 units.</summary>
+public readonly record struct FindHit(uint Row, bool OnRightSide, uint Line, uint Start, uint End);
+
+[Flags]
+public enum FindFlags : uint { None = 0, CaseSensitive = 1, WholeWord = 2, Regex = 4, SkipLeft = 8, SkipRight = 16 }

@@ -78,6 +78,59 @@ public sealed unsafe class TextCompare : CoreObject
         return (int)written;
     }
 
+    /// <summary>The runs of rows the Context view hides: rows farther than <paramref name="context"/> rows
+    /// from a difference. A file without differences folds completely.</summary>
+    public Fold[] GetFolds(uint context = 3, bool importantOnly = false)
+    {
+        uint written = 0, total = 0;
+        DsFold probe = default;
+        Native.Check(NativeMethods.ds_text_get_folds(H, context, importantOnly ? (byte)1 : (byte)0, 0, 0, &probe, &written, &total));
+        var folds = new DsFold[total];
+        fixed (DsFold* p = folds)
+        {
+            Native.Check(NativeMethods.ds_text_get_folds(H, context, importantOnly ? (byte)1 : (byte)0, 0, total, p, &written, &total));
+        }
+        var result = new Fold[written];
+        for (var i = 0; i < written; i++) result[i] = new Fold(folds[i].first_row, folds[i].row_count);
+        return result;
+    }
+
+    /// <summary>The kind of sections <paramref name="first"/>..: insert, delete or replacement.</summary>
+    public int GetSectionKinds(uint first, Span<SectionKind> kinds)
+    {
+        uint written = 0;
+        fixed (SectionKind* p = kinds)
+        {
+            Native.Check(NativeMethods.ds_text_get_section_kinds(H, first, (uint)kinds.Length, (byte*)p, &written));
+        }
+        return (int)written;
+    }
+
+    /// <summary>The first row of the next (or previous) section of the kind, or null at the ends.</summary>
+    public uint? FindSection(uint fromRow, bool forward, SectionKind kind)
+    {
+        uint row = 0;
+        var st = NativeMethods.ds_text_find_section(H, fromRow, forward ? (byte)0 : (byte)1, (byte)kind, &row);
+        if (st == (int)DsError.NotFound) return null;
+        Native.Check(st);
+        return row;
+    }
+
+    /// <summary>Finds text in the lines of the rows from <paramref name="fromRow"/> (inclusive); null when there is no match.</summary>
+    public FindHit? Find(string query, FindFlags flags, uint fromRow, bool forward = true)
+    {
+        var q = Encoding.UTF8.GetBytes(query);
+        DsFindHit hit = default;
+        int st;
+        fixed (byte* p = q)
+        {
+            st = NativeMethods.ds_text_find(H, new DsStr8 { ptr = p, len = (nuint)q.Length }, (uint)flags, fromRow, forward ? (byte)0 : (byte)1, &hit);
+        }
+        if (st == (int)DsError.NotFound) return null;
+        Native.Check(st);
+        return new FindHit(hit.row, hit.side == 1, hit.line, hit.start, hit.end);
+    }
+
     public int GetSections(uint first, Span<Section> sections)
     {
         uint written = 0;
@@ -172,6 +225,28 @@ public sealed unsafe class TextCompare : CoreObject
         }
     }
 
+    private string Call(delegate*<ulong, DsStr8, DsBuf*, int> f, string json)
+    {
+        var bytes = Native.Json(json);
+        DsBuf b = default;
+        fixed (byte* j = bytes)
+        {
+            Native.Check(f(H, new DsStr8 { ptr = j, len = (nuint)bytes.Length }, &b));
+        }
+        return Native.TakeBuf(b);
+    }
+
+    /// <summary>One edit of the text (backlog E11.5-S14): copy rows, a section or the whole text from one side
+    /// to the other, replace lines, undo, redo, convert encoding or line endings, read a side again in
+    /// another encoding, or ask for the state. Request e.g. <c>{"op":"copySection","from":"left","section":2}</c>;
+    /// the report has <c>changed</c>, <c>generation</c> and the state of both sides. The compare restarts on the
+    /// new text under this handle: pull rows again when <see cref="TextStatus.Generation"/> changed.</summary>
+    public string Edit(string requestJson) => Call(&NativeMethods.ds_text_edit, requestJson);
+
+    /// <summary>Saves one side atomically after checking that the file is still what was read.
+    /// Request <c>{"side":"right","backupSuffix":".bak","eol":"crlf","encoding":"utf-8-bom"}</c>.</summary>
+    public string Save(string requestJson) => Call(&NativeMethods.ds_text_save, requestJson);
+
     public void Cancel() => Native.Check(NativeMethods.ds_text_cancel(H));
 }
 
@@ -257,6 +332,13 @@ public sealed unsafe class FolderCompare : CoreObject
     public void Refresh(ReadOnlySpan<uint> nodes)
     {
         fixed (uint* p = nodes) Native.Check(NativeMethods.ds_folder_refresh(H, p, (uint)nodes.Length));
+    }
+
+    /// <summary>Marks items (and everything below them) as ignored, or takes the mark off: views hide them
+    /// unless <c>showIgnored</c> is set, and a sync plan leaves them alone.</summary>
+    public void SetIgnored(ReadOnlySpan<uint> nodes, bool ignored)
+    {
+        fixed (uint* p = nodes) Native.Check(NativeMethods.ds_folder_set_ignored(H, p, (uint)nodes.Length, ignored ? (byte)1 : (byte)0));
     }
 
     public void Cancel() => Native.Check(NativeMethods.ds_folder_cancel(H));
@@ -485,6 +567,27 @@ public static unsafe class FileOps
     public static Job Delete(string[] items, string? optionsJson = null,
         Action<DsEvent>? onEvent = null, Action<Action>? post = null) =>
         Start(items, null, optionsJson, onEvent, post, 2);
+
+    /// <summary>Renames a file or folder as a job. <paramref name="newName"/> is a name, not a path.</summary>
+    public static Job Rename(string item, string newName, string? optionsJson = null,
+        Action<DsEvent>? onEvent = null, Action<Action>? post = null)
+    {
+        var pump = EventPump.Create(onEvent, post);
+        var json = Native.Json(optionsJson);
+        ulong h = 0;
+        fixed (char* i = item)
+        fixed (char* n = newName)
+        fixed (byte* j = json)
+        {
+            var status = NativeMethods.ds_fileops_rename(
+                new DsStr16 { ptr = (ushort*)i, len = (nuint)item.Length },
+                new DsStr16 { ptr = (ushort*)n, len = (nuint)newName.Length },
+                new DsStr8 { ptr = j, len = (nuint)json.Length },
+                pump is null ? null : EventPump.Callback, pump is null ? null : pump.User, &h);
+            if (status < 0) { pump?.Dispose(); Native.Check(status); }
+        }
+        return Job.Adopt(h, pump);
+    }
 
     private static Job Start(string[] items, string? dst, string? optionsJson, Action<DsEvent>? onEvent,
         Action<Action>? post, int op)

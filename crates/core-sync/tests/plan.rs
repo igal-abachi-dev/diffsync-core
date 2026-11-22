@@ -369,3 +369,50 @@ fn summary_counts_and_bytes() {
     );
     assert_eq!((s.conflicts, s.errors, s.folders_created), (0, 0, 0));
 }
+
+#[test]
+fn an_item_the_user_ignored_is_left_alone_with_everything_below_it() {
+    let (l, r) = mixed();
+    l.add_dir("tree", T0).add_file("tree/new.txt", b"1", T0);
+    let mut c = compare(arc(l), arc(r), FolderRules::default());
+    let before = kinds(
+        &build_plan(&c, &rules(Preset::UpdateRight), None).unwrap(),
+        &c,
+    );
+    assert!(before.contains_key("lonly.txt") && before.contains_key("tree"));
+    for p in ["lonly.txt", "tree"] {
+        let id = find(&c, p);
+        c.set_ignored(id, true).unwrap();
+    }
+    let plan = build_plan(&c, &rules(Preset::UpdateRight), None).unwrap();
+    let after = kinds(&plan, &c);
+    assert!(!after.contains_key("lonly.txt"), "{after:?}");
+    assert!(
+        !after.keys().any(|k| k == "tree" || k.starts_with("tree/")),
+        "{after:?}"
+    );
+    assert!(after.contains_key("lnew.txt"));
+    assert_eq!(plan.ignored.len(), 2);
+}
+
+/// A file the user marked as ignored inside a folder that a Mirror deletes stays, and so does its
+/// folder (the non-recursive removal refuses a folder that still has something in it).
+#[test]
+fn an_ignored_file_inside_a_deleted_folder_is_not_deleted() {
+    let (l, r) = (MemVfs::new(), MemVfs::new());
+    r.add_file("a/keep.txt", b"keep", T0)
+        .add_file("a/other.txt", b"x", T0);
+    let rc = r.clone();
+    let mut c = compare(arc(l), arc(r), FolderRules::default());
+    let keep = find(&c, "a/keep.txt");
+    c.set_ignored(keep, true).unwrap();
+    let plan = build_plan(&c, &rules(Preset::MirrorToRight), None).unwrap();
+    assert!(plan.ignored.contains(&keep));
+    let sc = shared(c);
+    let res = core_sync::start_sync(&plan, &sc, core_sync::ExecOverrides::default(), None)
+        .unwrap()
+        .wait();
+    assert_eq!(res.failed, 0, "{res:?}");
+    assert_eq!(rc.read("a/keep.txt").unwrap(), b"keep");
+    assert!(rc.read("a/other.txt").is_none());
+}

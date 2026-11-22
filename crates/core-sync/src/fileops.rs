@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use core_base::{Error, Result};
 use core_vfs::fold::fold_name;
 use core_vfs::identity::{RootsRelation, roots_relation};
-use core_vfs::{Entry, Kind, NameCheck, VPath, case_collisions, validate_name};
+use core_vfs::{Entry, Kind, NameCheck, VPath, case_collisions, temp_sibling_name, validate_name};
 
 use crate::exec::{AfterStep, ExecOptions, Job, JobSink, Loc, Phase, Step, StepKind};
 use crate::plan::Fingerprint;
@@ -232,7 +232,7 @@ fn copy_steps(item: &Loc, dst_dir: &Loc, o: &FileOpOptions, out: &mut Vec<Step>)
 
 /// Delete steps for `item`, post-order; folders go only when empty, so nothing that was not
 /// listed here is deleted (plan.md §9.1).
-fn delete_steps(item: &Loc, out: &mut Vec<Step>) -> Result<()> {
+fn delete_steps(item: &Loc, out: &mut Vec<Step>, keep_links: bool) -> Result<()> {
     let root = stat_item(item)?;
     let mut stack = vec![(item.clone(), root, false)];
     while let Some((loc, entry, visited)) = stack.pop() {
@@ -248,6 +248,9 @@ fn delete_steps(item: &Loc, out: &mut Vec<Step>) -> Result<()> {
                     stack.push((child, k, false));
                 }
             }
+            // decision D64: a move to another volume never copied this link (D16), so it is not
+            // deleted either; it stays where it is and keeps its folder from being removed
+            Kind::Link if keep_links => {}
             _ => {
                 let mut s = step(StepKind::Delete, Phase::Deletes, None, loc, "delete");
                 s.expect_dst = Some(Fingerprint::of_entry(&entry));
@@ -314,9 +317,16 @@ pub fn plan_move_items(items: &[Loc], dst_dir: &Loc, o: &FileOpOptions) -> Resul
             s.bytes = root.size;
             steps.push(s);
         } else {
+            if root.kind == Kind::Link {
+                return Err(Error::new(
+                    core_base::ErrorKind::Unsupported,
+                    "a link cannot be moved to another volume (links are never copied); move its target or recreate it",
+                )
+                .with_path(i.path.display()));
+            }
             copy_steps(i, dst_dir, o, &mut steps)?;
             let mut deletes = Vec::new();
-            delete_steps(i, &mut deletes)?;
+            delete_steps(i, &mut deletes, true)?;
             // each delete waits for its copy (decision: D43)
             let copy_root = dst_dir
                 .path
@@ -338,6 +348,9 @@ pub fn plan_move_items(items: &[Loc], dst_dir: &Loc, o: &FileOpOptions) -> Resul
         }
     }
     finalize(&mut steps);
+    // decision D64: a delete that is the second half of a cross-volume move needs the copy of
+    // exactly that item in this job; without one the source is left alone
+    steps.retain(|s| s.guard.is_none() || s.requires.is_some());
     steps.sort_by_key(|s| s.phase);
     Ok(steps)
 }
@@ -349,10 +362,114 @@ pub fn plan_delete_items(items: &[Loc]) -> Result<Vec<Step>> {
         if i.path.is_root() {
             return Err(Error::invalid_argument("the root cannot be deleted"));
         }
-        delete_steps(i, &mut steps)?;
+        delete_steps(i, &mut steps, false)?;
     }
     finalize(&mut steps);
     Ok(steps)
+}
+
+/// The step of `rename_item`: the item gets another name in its own folder (backlog E11.5-S14.5).
+///
+/// The new name is checked against the target's rules (§9.8), must not exist (a rename never
+/// replaces), and a change of case alone is allowed on a case-insensitive file system. A link is
+/// renamed as a link and never followed.
+pub fn plan_rename_item(item: &Loc, new_name: &str) -> Result<Vec<Step>> {
+    let Some(old_name) = item.path.file_name().cloned() else {
+        return Err(Error::invalid_argument("the root cannot be renamed"));
+    };
+    let caps = item.vfs.caps();
+    match validate_name(&caps, new_name) {
+        NameCheck::Ok => {}
+        other => {
+            return Err(Error::new(
+                core_base::ErrorKind::InvalidName,
+                format!("'{new_name}' cannot be used as a name here ({other:?})"),
+            ));
+        }
+    }
+    if new_name.contains(['/', '\\']) {
+        return Err(Error::new(
+            core_base::ErrorKind::InvalidName,
+            "a name cannot contain a path separator; use move to change the folder",
+        ));
+    }
+    if old_name.to_string_lossy() == new_name {
+        return Err(Error::invalid_argument("the new name is the old name"));
+    }
+    let root = stat_item(item)?;
+    let parent = item.path.parent().unwrap_or_else(VPath::root);
+    let dst = Loc {
+        vfs: item.vfs.clone(),
+        path: parent.join(core_vfs::Name::new(new_name)),
+    };
+    let case_only = !caps.case_sensitive
+        && fold_name(old_name.units()) == fold_name(core_vfs::Name::new(new_name).units());
+    if !case_only {
+        if let Some(e) = dst.vfs.stat(&dst.path)? {
+            return Err(Error::new(
+                core_base::ErrorKind::AlreadyExists,
+                format!("'{}' already exists", e.name.to_string_lossy()),
+            )
+            .with_path(dst.path.display()));
+        }
+        // a name that differs only in case or normalisation from a sibling is a collision too
+        let mut sibs = Vec::new();
+        item.vfs.list(&parent, &mut sibs)?;
+        let want = fold_name(core_vfs::Name::new(new_name).units());
+        if !caps.case_sensitive
+            && sibs
+                .iter()
+                .any(|e| e.name != old_name && fold_name(e.name.units()) == want)
+        {
+            return Err(Error::new(
+                core_base::ErrorKind::AlreadyExists,
+                format!("a sibling already has the name '{new_name}' apart from its case"),
+            ));
+        }
+    }
+    if case_only {
+        // the new name is the same item for the file system, so "the destination is absent" cannot
+        // hold: go through a temporary name, the second rename waits for the first
+        let tmp = Loc {
+            vfs: item.vfs.clone(),
+            path: parent.join(temp_sibling_name(&old_name)),
+        };
+        let mut first = step(
+            StepKind::MoveFile,
+            Phase::Copies,
+            Some(item.clone()),
+            tmp.clone(),
+            "rename",
+        );
+        first.expect_src = Some(Fingerprint::of_entry(&root));
+        let second = step(StepKind::MoveFile, Phase::Copies, Some(tmp), dst, "rename");
+        let mut steps = vec![first, second];
+        finalize(&mut steps);
+        steps[1].requires = Some(steps[0].id);
+        return Ok(steps);
+    }
+    let mut s = step(
+        StepKind::MoveFile,
+        Phase::Copies,
+        Some(item.clone()),
+        dst,
+        "rename",
+    );
+    s.expect_src = Some(Fingerprint::of_entry(&root));
+    let mut steps = vec![s];
+    finalize(&mut steps);
+    Ok(steps)
+}
+
+/// Renames a file or folder as a job.
+pub fn rename_item(
+    item: &Loc,
+    new_name: &str,
+    o: FileOpOptions,
+    sink: Option<JobSink>,
+) -> Result<Job> {
+    let steps = plan_rename_item(item, new_name)?;
+    Ok(start(steps, o, "rename", sink))
 }
 
 fn start(steps: Vec<Step>, mut o: FileOpOptions, label: &str, sink: Option<JobSink>) -> Job {

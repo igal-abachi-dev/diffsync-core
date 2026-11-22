@@ -269,7 +269,39 @@ pub struct DsQuestion {
     pub step: u32,
 }
 
+/// A run of rows the Context view hides (8 bytes).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DsFold {
+    pub first_row: u32,
+    pub row_count: u32,
+}
+
+/// A match of `ds_text_find` (20 bytes): the row, the line on `side` (0 left, 1 right), and the
+/// range in UTF-16 units.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DsFindHit {
+    pub row: u32,
+    pub line: u32,
+    pub start: u32,
+    pub end: u32,
+    pub side: u8,
+    pub pad: [u8; 3],
+}
+
+/// Free and total bytes of a volume (16 bytes).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DsVolumeInfo {
+    pub free_bytes: u64,
+    pub total_bytes: u64,
+}
+
 const _: () = {
+    assert!(size_of::<DsFold>() == 8);
+    assert!(size_of::<DsFindHit>() == 20);
+    assert!(size_of::<DsVolumeInfo>() == 16);
     assert!(size_of::<DsTextRow>() == 16);
     assert!(size_of::<DsRange>() == 12);
     assert!(size_of::<DsSection>() == 12);

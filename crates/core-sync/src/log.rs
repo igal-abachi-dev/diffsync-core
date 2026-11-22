@@ -40,6 +40,8 @@ pub fn iso_time(t: SystemTime) -> String {
 pub struct JobLog {
     file: std::fs::File,
     finished: bool,
+    /// The first error of writing a line, if any.
+    write_error: Option<String>,
 }
 
 impl JobLog {
@@ -69,15 +71,23 @@ impl JobLog {
         let mut l = JobLog {
             file,
             finished: false,
+            write_error: None,
         };
         l.line(&json!({"time": iso_time(SystemTime::now()), "event": "start", "job": name, "steps": steps}));
         Ok(l)
     }
 
     fn line(&mut self, v: &serde_json::Value) {
-        // a log that cannot be written must not stop the job
-        let _ = writeln!(self.file, "{v}");
-        let _ = self.file.flush();
+        // the error is kept; the executor decides whether a broken log stops the job (D66)
+        let r = writeln!(self.file, "{v}").and_then(|()| self.file.flush());
+        if let Err(e) = r {
+            self.write_error.get_or_insert_with(|| e.to_string());
+        }
+    }
+
+    /// The first error that happened while writing a line.
+    pub fn write_error(&self) -> Option<&str> {
+        self.write_error.as_deref()
     }
 
     /// One line per action: timestamp, action, paths, bytes, outcome and error.

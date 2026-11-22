@@ -42,6 +42,97 @@ impl Encoding {
     }
 }
 
+/// An encoding and whether the file starts with a byte order mark, as one value that can be named,
+/// parsed and compared (backlog E11.5-S14.2). `Utf8Bom` never appears here: it is `Utf8` with
+/// `bom` set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextEncoding {
+    pub encoding: Encoding,
+    pub bom: bool,
+}
+
+impl TextEncoding {
+    pub fn new(encoding: Encoding, bom: bool) -> TextEncoding {
+        let (encoding, bom) = match encoding {
+            Encoding::Utf8Bom => (Encoding::Utf8, true),
+            e => (e, bom),
+        };
+        TextEncoding { encoding, bom }
+    }
+
+    /// The name used in the ABI and in reports: `utf-8`, `utf-8-bom`, `utf-16le`, `utf-16le-bom`,
+    /// `utf-16be`, `utf-16be-bom`, or the code page's name (`windows-1255`). A BOM only exists for
+    /// the Unicode encodings; a legacy code page never has one.
+    pub fn label(self) -> String {
+        let base = match self.encoding {
+            Encoding::Utf8 | Encoding::Utf8Bom => "utf-8".to_string(),
+            Encoding::Utf16Le => "utf-16le".to_string(),
+            Encoding::Utf16Be => "utf-16be".to_string(),
+            Encoding::Ansi(e) => e.name().to_ascii_lowercase(),
+        };
+        if self.bom && !matches!(self.encoding, Encoding::Ansi(_)) {
+            format!("{base}-bom")
+        } else {
+            base
+        }
+    }
+
+    /// The inverse of [`label`](Self::label); also accepts the usual aliases (`utf8`, `utf-16`,
+    /// `latin1`, `cp1255`, ...). `utf-16` and `ucs-2` mean little endian with a BOM, what Windows
+    /// calls "Unicode". Returns `None` for a name that is no text encoding.
+    pub fn parse(label: &str) -> Option<TextEncoding> {
+        let l = label.trim().to_ascii_lowercase();
+        let (base, bom) = match l.strip_suffix("-bom") {
+            Some(b) => (b.to_string(), Some(true)),
+            None => match l.strip_suffix("-nobom") {
+                Some(b) => (b.to_string(), Some(false)),
+                None => (l.clone(), None),
+            },
+        };
+        let unicode = |enc: Encoding, default_bom: bool| {
+            Some(TextEncoding {
+                encoding: enc,
+                bom: bom.unwrap_or(default_bom),
+            })
+        };
+        match base.as_str() {
+            "utf-8" | "utf8" => unicode(Encoding::Utf8, false),
+            "utf-16le" | "utf16le" | "utf-16" | "utf16" | "ucs-2le" | "ucs-2" | "ucs2" => {
+                unicode(Encoding::Utf16Le, true)
+            }
+            "utf-16be" | "utf16be" | "ucs-2be" => unicode(Encoding::Utf16Be, true),
+            other => {
+                let e = RsEncoding::for_label(other.as_bytes())?;
+                if e == encoding_rs::UTF_8 {
+                    unicode(Encoding::Utf8, false)
+                } else if e == encoding_rs::UTF_16LE {
+                    unicode(Encoding::Utf16Le, true)
+                } else if e == encoding_rs::UTF_16BE {
+                    unicode(Encoding::Utf16Be, true)
+                } else if bom == Some(true) {
+                    None // a legacy code page has no BOM
+                } else {
+                    Some(TextEncoding {
+                        encoding: Encoding::Ansi(e),
+                        bom: false,
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// The first character of `text` that `enc` cannot represent, as `(0-based char index, char)`.
+/// `None` when everything fits (always for the Unicode encodings).
+pub fn first_unmappable(text: &str, enc: Encoding) -> Option<(usize, char)> {
+    let Encoding::Ansi(e) = enc else { return None };
+    let mut buf = [0u8; 4];
+    text.chars().enumerate().find(|(_, c)| {
+        let (_, _, bad) = e.encode(c.encode_utf8(&mut buf));
+        bad
+    })
+}
+
 /// Options for [`sniff`] and the loaders.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DecodeOptions {
@@ -243,6 +334,58 @@ pub fn encode(text: &str, enc: Encoding, bom: bool) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use encoding_rs::{WINDOWS_1252, WINDOWS_1255};
+
+    #[test]
+    fn labels_round_trip_and_aliases_parse() {
+        for l in [
+            "utf-8",
+            "utf-8-bom",
+            "utf-16le",
+            "utf-16le-bom",
+            "utf-16be",
+            "utf-16be-bom",
+            "windows-1255",
+            "shift_jis",
+        ] {
+            let t = TextEncoding::parse(l).unwrap_or_else(|| panic!("{l}"));
+            assert_eq!(TextEncoding::parse(&t.label()), Some(t), "{l}");
+        }
+        assert_eq!(
+            TextEncoding::parse("UTF-16"),
+            Some(TextEncoding::new(Encoding::Utf16Le, true))
+        );
+        assert_eq!(
+            TextEncoding::parse("utf-16le-nobom"),
+            Some(TextEncoding::new(Encoding::Utf16Le, false))
+        );
+        assert_eq!(
+            TextEncoding::parse("cp1255").unwrap().label(),
+            "windows-1255"
+        );
+        assert_eq!(
+            TextEncoding::parse("latin1").unwrap().label(),
+            "windows-1252"
+        );
+        assert!(TextEncoding::parse("windows-1252-bom").is_none());
+        assert!(TextEncoding::parse("klingon").is_none());
+        assert_eq!(
+            TextEncoding::new(Encoding::Utf8Bom, false),
+            TextEncoding::new(Encoding::Utf8, true)
+        );
+    }
+
+    #[test]
+    fn the_first_character_a_code_page_cannot_hold_is_found() {
+        assert_eq!(
+            first_unmappable("abc é", Encoding::Ansi(WINDOWS_1252)),
+            None
+        );
+        assert_eq!(
+            first_unmappable("abc €日", Encoding::Ansi(WINDOWS_1252)),
+            Some((5, '日'))
+        );
+        assert_eq!(first_unmappable("日", Encoding::Utf8), None);
+    }
 
     fn opts() -> DecodeOptions {
         DecodeOptions {

@@ -109,16 +109,7 @@ pub fn copy_stream(
             )
             .with_path(src.display()));
         }
-        finish(
-            src_vfs,
-            dst_vfs,
-            &se,
-            &tmp,
-            dst,
-            existing.as_ref().map(|e| e.attrs),
-            crc,
-            o,
-        )
+        finish(src_vfs, dst_vfs, &se, &tmp, dst, existing.as_ref(), crc, o)
     });
     if result.is_err() {
         cleanup(dst_vfs, &tmp);
@@ -166,11 +157,12 @@ fn finish(
     se: &crate::vfs::Entry,
     tmp: &VPath,
     dst: &VPath,
-    old_attrs: Option<u32>,
+    existing: Option<&crate::vfs::Entry>,
     crc: u32,
     o: &CopyOptions,
 ) -> Result<()> {
     let _ = src_vfs;
+    let old_attrs = existing.map(|e| e.attrs);
     dst_vfs.set_times(tmp, Some(se.mtime), o.copy_ctime.then_some(se.ctime))?;
     if dst_vfs.caps().has_attributes {
         dst_vfs.set_attrs(
@@ -181,7 +173,41 @@ fn finish(
     if o.verify {
         verify_crc(dst_vfs, tmp, crc)?; // fix: B6
     }
-    rename_with_retry(dst_vfs, tmp, dst, old_attrs, o)
+    // decision D64: the destination must still be what it was when the copy started; a long copy
+    // gives another program time to change it, and the rename would throw that change away
+    check_destination_unchanged(dst_vfs, dst, existing)?;
+    if o.durable {
+        dst_vfs.sync_file(tmp)?; // decision D65
+    }
+    let r = rename_with_retry(dst_vfs, tmp, dst, old_attrs, o);
+    if r.is_ok() && o.durable {
+        let _ = dst_vfs.sync_parent(dst);
+    }
+    r
+}
+
+/// Fails with `ChangedSinceCompare` when `dst` is not what `before` says (nothing, or a file of
+/// that size and time). Called right before a copy replaces the destination.
+pub fn check_destination_unchanged(
+    v: &dyn Vfs,
+    dst: &VPath,
+    before: Option<&crate::vfs::Entry>,
+) -> Result<()> {
+    let now = v.stat(dst)?;
+    let same = match (before, &now) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.kind == b.kind && a.size == b.size && a.mtime == b.mtime,
+        _ => false,
+    };
+    if same {
+        Ok(())
+    } else {
+        Err(Error::new(
+            ErrorKind::ChangedSinceCompare,
+            "the destination changed while the file was being copied; nothing was replaced",
+        )
+        .with_path(dst.display()))
+    }
 }
 
 /// The final rename of a safe copy, with the attribute-clear retry of fix B5: when the rename is
@@ -243,10 +269,42 @@ pub fn copy_between(
     prog: Progress<'_>,
     cancel: &CancelToken,
 ) -> Result<()> {
-    if src_vfs.storage_id() == dst_vfs.storage_id() && src_vfs.caps().native_copy {
-        return src_vfs.copy_file(src, dst, o, prog, cancel);
+    let mut attempt = 0;
+    loop {
+        let result = if src_vfs.storage_id() == dst_vfs.storage_id() && src_vfs.caps().native_copy {
+            src_vfs.copy_file(src, dst, o, prog, cancel)
+        } else {
+            copy_stream(src_vfs, src, dst_vfs, dst, o, prog, cancel)
+        };
+        match result {
+            // decision: D57: a transient failure is tried again like robocopy's /R /W; every
+            // attempt is a whole safe copy (temp file, rename), so a retry never sees half a file
+            Err(e) if attempt < o.retries && is_transient(&e) && !cancel.is_cancelled() => {
+                attempt += 1;
+                wait_cancellable(o.retry_wait_ms, cancel)?;
+            }
+            other => return other,
+        }
     }
-    copy_stream(src_vfs, src, dst_vfs, dst, o, prog, cancel)
+}
+
+/// Errors that may go away by themselves: a sharing or lock violation (another program has the
+/// file open), and the network errors of a share that dropped for a moment (bad network path,
+/// device not exist, unexpected network error, network name deleted, semaphore timeout, network
+/// unreachable, host unreachable).
+pub fn is_transient(e: &Error) -> bool {
+    e.kind() == ErrorKind::SharingViolation
+        || matches!(e.os_code(), Some(53 | 55 | 59 | 64 | 121 | 1231 | 1232))
+}
+
+/// Sleeps `ms` milliseconds in short steps; `Cancelled` as soon as the token is cancelled.
+fn wait_cancellable(ms: u32, cancel: &CancelToken) -> Result<()> {
+    let end = std::time::Instant::now() + std::time::Duration::from_millis(u64::from(ms));
+    while std::time::Instant::now() < end {
+        cancel.check()?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    cancel.check()
 }
 
 /// Writes `bytes` to `path` atomically: temp sibling, flush, rename over the target
@@ -258,7 +316,9 @@ pub fn write_atomic(v: &dyn Vfs, path: &VPath, bytes: &[u8]) -> Result<()> {
         .and_then(|()| w.flush())
         .map_err(|e| Error::from_io(&e, path.display()));
     drop(w);
-    let r = r.and_then(|()| v.rename(&tmp, path, true));
+    let r = r
+        .and_then(|()| v.sync_file(&tmp))
+        .and_then(|()| v.rename(&tmp, path, true));
     if r.is_err() {
         cleanup(v, &tmp);
     }

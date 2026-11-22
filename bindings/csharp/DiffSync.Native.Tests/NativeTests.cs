@@ -39,7 +39,7 @@ public class LibraryTests
     public void Abi_version_and_struct_layouts_match_the_header()
     {
         Assert.Equal(1, DiffSyncLibrary.AbiMajor);
-        Assert.True(DiffSyncLibrary.AbiMinor >= 0);
+        Assert.True(DiffSyncLibrary.AbiMinor >= 1, "ABI 1.1 added the integration exports");
         Assert.Equal(16, Unsafe.SizeOf<TextRow>());
         Assert.Equal(12, Unsafe.SizeOf<TextRange>());
         Assert.Equal(12, Unsafe.SizeOf<Section>());

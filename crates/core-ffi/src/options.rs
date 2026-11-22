@@ -80,10 +80,28 @@ struct ExecJson {
     job_name: Option<String>,
     verify: Option<bool>,
     use_recycle_bin: Option<bool>,
+    /// Flush copies to the storage device before they replace their destination; default true.
+    durable_copy: Option<bool>,
+    /// A log that was asked for must work, or the job does not run (default true).
+    log_required: Option<bool>,
     overwrite: bool,
+    /// Tries again after a transient copy failure (robocopy's `/R`); default 2.
+    copy_retries: Option<u32>,
+    /// Milliseconds between the tries (robocopy's `/W`); default 1000.
+    copy_retry_wait_ms: Option<u32>,
 }
 
-const EXEC_KEYS: &[&str] = &["logDir", "jobName", "verify", "useRecycleBin", "overwrite"];
+const EXEC_KEYS: &[&str] = &[
+    "logDir",
+    "jobName",
+    "verify",
+    "useRecycleBin",
+    "durableCopy",
+    "logRequired",
+    "overwrite",
+    "copyRetries",
+    "copyRetryWaitMs",
+];
 
 fn parse_exec(json: &str) -> Res<ExecJson> {
     let v = check_object(json, EXEC_KEYS, "exec")?;
@@ -115,6 +133,10 @@ pub fn exec_overrides(json: &str) -> Res<ExecOverrides> {
         job_name: job_name_of(e.job_name)?,
         verify: e.verify,
         use_recycle_bin: e.use_recycle_bin,
+        durable_copy: e.durable_copy,
+        log_required: e.log_required,
+        copy_retries: e.copy_retries,
+        copy_retry_wait_ms: e.copy_retry_wait_ms,
     })
 }
 
@@ -151,6 +173,18 @@ pub fn fileop_options(json: &str) -> Res<FileOpOptions> {
     if let Some(v) = e.use_recycle_bin {
         exec.use_recycle_bin = v;
     }
+    if let Some(v) = e.durable_copy {
+        exec.durable_copy = v;
+    }
+    if let Some(v) = e.log_required {
+        exec.log_required = v;
+    }
+    if let Some(v) = e.copy_retries {
+        exec.copy_retries = v;
+    }
+    if let Some(v) = e.copy_retry_wait_ms {
+        exec.copy_retry_wait_ms = v;
+    }
     Ok(FileOpOptions {
         overwrite: e.overwrite,
         exec,
@@ -163,6 +197,10 @@ pub struct ViewJson {
     pub filter: Option<String>,
     pub search: Option<String>,
     pub sort: Option<SortJson>,
+    /// Treat differences that are only unimportant as equal.
+    pub ignore_unimportant: Option<bool>,
+    /// Show items marked as ignored.
+    pub show_ignored: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -173,7 +211,17 @@ pub struct SortJson {
 }
 
 pub fn view_json(json: &str) -> Res<ViewJson> {
-    let v = check_object(json, &["filter", "search", "sort"], "view")?;
+    let v = check_object(
+        json,
+        &[
+            "filter",
+            "search",
+            "sort",
+            "ignoreUnimportant",
+            "showIgnored",
+        ],
+        "view",
+    )?;
     serde_json::from_value(v).map_err(|e| Fail::invalid(format!("bad view options: {e}")))
 }
 
@@ -185,6 +233,12 @@ pub fn filter_of(s: &str) -> Res<ViewFilter> {
         "orphans" => ViewFilter::Orphans,
         "leftNewer" => ViewFilter::LeftNewer,
         "rightNewer" => ViewFilter::RightNewer,
+        "noOrphans" => ViewFilter::NoOrphans,
+        "differencesNoOrphans" => ViewFilter::DifferencesNoOrphans,
+        "leftOrphans" => ViewFilter::LeftOrphans,
+        "rightOrphans" => ViewFilter::RightOrphans,
+        "leftNewerOrphans" => ViewFilter::LeftNewerOrphans,
+        "rightNewerOrphans" => ViewFilter::RightNewerOrphans,
         other => return Err(Fail::invalid(format!("unknown view filter `{other}`"))),
     })
 }
@@ -217,6 +271,7 @@ const ENUMS: &[(&str, &str, &[&str])] = &[
         "whitespace",
         &["all", "leadingTrailing", "changes", "ignoreAll"],
     ),
+    ("text", "eol", &["ignore", "strict", "crlfAsLf"]),
     ("folder", "contentKind", &["crc32", "binary", "rulesBased"]),
     (
         "sync",
@@ -239,6 +294,12 @@ const ENUMS: &[(&str, &str, &[&str])] = &[
             "orphans",
             "leftNewer",
             "rightNewer",
+            "noOrphans",
+            "differencesNoOrphans",
+            "leftOrphans",
+            "rightOrphans",
+            "leftNewerOrphans",
+            "rightNewerOrphans",
         ],
     ),
 ];
@@ -286,7 +347,8 @@ pub fn schema_json() -> String {
     let folder = to_v(serde_json::to_value(FolderRules::default()).unwrap_or_default());
     let sync = to_v(serde_json::to_value(SyncRules::default()).unwrap_or_default());
     let exec = json!({
-        "logDir": "", "jobName": "", "verify": false, "useRecycleBin": false, "overwrite": false
+        "logDir": "", "jobName": "", "verify": false, "useRecycleBin": false, "overwrite": false,
+        "durableCopy": true, "logRequired": true, "copyRetries": 2, "copyRetryWaitMs": 1000
     });
     let view = json!({"filter": "all", "search": "", "sort": {}});
     let schema = json!({

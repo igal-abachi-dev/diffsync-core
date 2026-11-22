@@ -661,9 +661,31 @@ pub fn format_context_time(ticks: i64) -> String {
     )
 }
 
+/// The date of a mail header (RFC 2822, as `git format-patch` writes it): `Tue, 1 Jan 2030
+/// 10:00:00 +0000` (UTC), from 100 ns ticks since 1601.
+pub fn format_mail_time(ticks: i64) -> String {
+    let ctx = format_context_time(ticks); // `Sun Nov 22 07:58:24 2026`
+    let parts: Vec<&str> = ctx.split_whitespace().collect();
+    format!(
+        "{}, {} {} {} {} +0000",
+        parts[0],
+        parts[2].parse::<u32>().unwrap_or(1),
+        parts[1],
+        parts[4],
+        parts[3]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mail_time_has_the_rfc_2822_shape() {
+        // 2030-01-01 10:00:00 UTC, a Tuesday
+        let ticks = (1_893_492_000 + 11_644_473_600) * 10_000_000;
+        assert_eq!(format_mail_time(ticks), "Tue, 1 Jan 2030 10:00:00 +0000");
+    }
 
     fn compare(a: &str, b: &str, opts: &TextOptions) -> std::sync::Arc<TextCompare> {
         let tc = TextCompare::start(

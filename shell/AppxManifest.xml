@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparse package manifest for the Windows 11 top-level context menu (backlog E11.5-S7.3).
+
+  Windows 11 shows IExplorerCommand handlers in the new menu only when they belong to a package
+  with an identity. A *sparse* package gives the shell extension that identity without moving any
+  file: the DLL stays where it is (the "external location").
+
+  Status: written from Microsoft's documented schema; not validated on a machine in this
+  repository's test runs. To use it you need Windows 11 and either Developer Mode (loose
+  registration) or a signed package (scripts\shell\register-modern-menu.ps1 makes a self-signed
+  one; a release needs a real certificate). The Publisher below must equal the certificate subject.
+
+  The CLSIDs are the ones in crates/shell-ext/src/com.rs.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 desktop4 desktop5 com rescap">
+
+  <Identity Name="DiffSync.ShellExtension" Publisher="CN=DiffSync" Version="1.0.0.0" ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>DiffSync shell extension</DisplayName>
+    <PublisherDisplayName>DiffSync</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <!-- The package needs one application entry; it is never started. The executable name only has
+         to be a file name inside the external location. -->
+    <Application Id="App" Executable="diffsync_shell.dll" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="packagedClassicApp">
+      <uap:VisualElements AppListEntry="none" DisplayName="DiffSync" Description="DiffSync shell extension"
+                          BackgroundColor="transparent"
+                          Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="DiffSyncSelectLeft" Clsid="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C11" />
+              <desktop5:Verb Id="DiffSyncCompare" Clsid="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C12" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="DiffSyncSelectLeftFolder" Clsid="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C11" />
+              <desktop5:Verb Id="DiffSyncCompareFolder" Clsid="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C12" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="DiffSync shell extension">
+              <com:Class Id="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C11" Path="diffsync_shell.dll" ThreadingModel="STA" />
+              <com:Class Id="B3F2A1C0-5D7E-4C8A-9E21-0A6D3F4B7C12" Path="diffsync_shell.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

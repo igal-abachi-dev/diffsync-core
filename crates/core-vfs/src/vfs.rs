@@ -141,10 +141,19 @@ pub struct CopyOptions {
     pub overwrite_readonly: bool,
     /// Write to a `.dctmp~` sibling and rename (fix B4, decision D13: on by default).
     pub safe_copy: bool,
+    /// Flush the copy to the storage device before it is renamed over the destination, so that a
+    /// power loss cannot leave a zero-filled or truncated file where the old one was (decision
+    /// D65). On by default; it costs a flush per file.
+    pub durable: bool,
     /// Also copy the creation time.
     pub copy_ctime: bool,
     /// Read the copy back and compare checksums before the final rename (fix B6).
     pub verify: bool,
+    /// How many times a copy that failed with a transient error is tried again (a file locked by
+    /// another program, a network share that dropped): robocopy's `/R`. 0 = no retry.
+    pub retries: u32,
+    /// Milliseconds to wait before each retry (robocopy's `/W`). Cancel ends the wait.
+    pub retry_wait_ms: u32,
 }
 
 impl Default for CopyOptions {
@@ -153,8 +162,11 @@ impl Default for CopyOptions {
             overwrite: false,
             overwrite_readonly: false,
             safe_copy: true,
+            durable: true,
             copy_ctime: false,
             verify: false,
+            retries: 0,
+            retry_wait_ms: 1000,
         }
     }
 }
@@ -194,6 +206,33 @@ pub trait Vfs: Send + Sync {
     /// Deletes a file, link or folder. **Never follows links**: deleting a junction removes the
     /// junction only. Folders are deleted recursively.
     fn delete(&self, p: &VPath, mode: DeleteMode) -> Result<()>;
+
+    /// Flushes a written file to the storage device (`FlushFileBuffers`, `fsync`) so that a power
+    /// loss after a rename cannot leave an empty or truncated file under the new name (decision
+    /// D65). The default does nothing, for backends with no storage.
+    fn sync_file(&self, _p: &VPath) -> Result<()> {
+        Ok(())
+    }
+
+    /// Flushes the folder entry of `p` (the rename that put a file there) on file systems where
+    /// that is a separate step (Unix). The default does nothing.
+    fn sync_parent(&self, _p: &VPath) -> Result<()> {
+        Ok(())
+    }
+
+    /// Removes a folder only when it is empty, in one step that never recurses (decision D64): a
+    /// file created in it a moment ago makes this return `Ok(false)` and nothing is removed.
+    /// `Ok(true)` when the folder was removed. The default is a listing followed by a delete, which
+    /// has a gap between the two calls; every backend of this crate overrides it.
+    fn remove_dir_if_empty(&self, p: &VPath) -> Result<bool> {
+        let mut left = Vec::new();
+        self.list(p, &mut left)?;
+        if !left.is_empty() {
+            return Ok(false);
+        }
+        self.delete(p, DeleteMode::Permanent)?;
+        Ok(true)
+    }
 
     fn create_dir(&self, p: &VPath) -> Result<()>;
 

@@ -17,7 +17,7 @@ mod mmap;
 pub mod rules;
 
 pub use document::{DEFAULT_MMAP_THRESHOLD, LoadOptions, READ_BLOCK, SourceId, TextDocument};
-pub use encoding::{DecodeOptions, Encoding};
+pub use encoding::{DecodeOptions, Encoding, TextEncoding, first_unmappable};
 pub use format::FileFormat;
 pub use lines::{LineEnding, LineIndex, LineSpan, index_lines};
 pub use meta::{LineMeta, META_CHUNK, MetaCursor, WeightFn, compute_all_parallel};

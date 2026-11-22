@@ -10,6 +10,8 @@ const CSHARP_PATH: &str = "bindings/csharp/NativeMethods.g.cs";
 const EXPORT_FILES: &[&str] = &[
     "lib.rs",
     "text.rs",
+    "tools.rs",
+    "edit.rs",
     "folder.rs",
     "sync.rs",
     "types.rs",

@@ -16,10 +16,13 @@
 //! Unknown switches are collected in `unknown` (a tool must not fail because a client passes a
 //! switch it does not know); the program decides whether to warn.
 
+use serde::Serialize;
+
 use crate::diffargs::ArgError;
 
 /// A compare of two paths: files or folders.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompareInvocation {
     pub left: String,
     pub right: String,
@@ -31,7 +34,8 @@ pub struct CompareInvocation {
 }
 
 /// A three-way (or two-way, without a base) merge whose result goes to `output`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MergeInvocation {
     /// "Mine" ($LOCAL).
     pub local: String,
@@ -48,7 +52,8 @@ pub struct MergeInvocation {
 }
 
 /// The seven (or nine) arguments of `GIT_EXTERNAL_DIFF`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GitExternalDiff {
     pub path: String,
     pub old_file: String,
@@ -73,7 +78,8 @@ impl GitExternalDiff {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum Invocation {
     Compare(CompareInvocation),
     Merge(MergeInvocation),
@@ -85,7 +91,7 @@ pub enum Invocation {
 }
 
 /// A parsed command line and the switches nobody asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Parsed {
     pub invocation: Invocation,
     pub unknown: Vec<String>,

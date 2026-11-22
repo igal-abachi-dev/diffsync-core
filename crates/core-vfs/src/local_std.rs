@@ -284,12 +284,77 @@ impl Vfs for LocalStd {
         copy_stream(self, src, self, dst, o, prog, cancel)
     }
 
+    fn sync_file(&self, p: &VPath) -> Result<()> {
+        let path = self.os_path(p);
+        // flushing needs a handle with write access; a read-only file (a copy of a read-only
+        // source) is made writable for the moment and put back
+        let mut restore = None;
+        let f = match fs::OpenOptions::new().write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let md = fs::metadata(&path).map_err(|e| self.err(&e, p))?;
+                if !md.permissions().readonly() {
+                    return Err(self.err(&e, p));
+                }
+                restore = Some(md.permissions());
+                let mut w = md.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                // intended: a read-only file must be flushable
+                w.set_readonly(false);
+                fs::set_permissions(&path, w).map_err(|e| self.err(&e, p))?;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .map_err(|e| self.err(&e, p))?
+            }
+            Err(e) => return Err(self.err(&e, p)),
+        };
+        let r = f.sync_all().map_err(|e| self.err(&e, p));
+        drop(f);
+        if let Some(perm) = restore {
+            let _ = fs::set_permissions(&path, perm);
+        }
+        r
+    }
+
+    fn sync_parent(&self, p: &VPath) -> Result<()> {
+        #[cfg(unix)]
+        {
+            if let Some(dir) = p.parent() {
+                let f = fs::File::open(self.os_path(&dir)).map_err(|e| self.err(&e, &dir))?;
+                f.sync_all().map_err(|e| self.err(&e, &dir))?;
+            }
+        }
+        let _ = p;
+        Ok(())
+    }
+
     fn rename(&self, from: &VPath, to: &VPath, replace: bool) -> Result<()> {
-        let dst = self.os_path(to);
-        if !replace && fs::symlink_metadata(&dst).is_ok() {
+        let (src, dst) = (self.os_path(from), self.os_path(to));
+        if replace {
+            return fs::rename(&src, &dst).map_err(|e| self.err(&e, to));
+        }
+        // decision D64: a rename that must not replace anything cannot be "look, then rename": a
+        // file created in between would be overwritten. A hard link fails atomically when the
+        // name is taken; the old name is removed afterwards. Where links are not supported (some
+        // network and FAT volumes), and for folders (which `rename` only replaces when empty),
+        // the check-then-rename remains.
+        let is_file = fs::symlink_metadata(&src).is_ok_and(|m| m.is_file());
+        if is_file {
+            match fs::hard_link(&src, &dst) {
+                Ok(()) => return fs::remove_file(&src).map_err(|e| self.err(&e, from)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(
+                        Error::new(ErrorKind::AlreadyExists, "destination exists").with_path(dst)
+                    );
+                }
+                Err(_) => {} // no hard links here: fall through
+            }
+        }
+        if fs::symlink_metadata(&dst).is_ok() {
             return Err(Error::new(ErrorKind::AlreadyExists, "destination exists").with_path(dst));
         }
-        fs::rename(self.os_path(from), &dst).map_err(|e| self.err(&e, to))
+        fs::rename(&src, &dst).map_err(|e| self.err(&e, to))
     }
 
     fn delete(&self, p: &VPath, mode: DeleteMode) -> Result<()> {
@@ -332,6 +397,28 @@ impl Vfs for LocalStd {
             }
         }
         Ok(())
+    }
+
+    fn remove_dir_if_empty(&self, p: &VPath) -> Result<bool> {
+        if p.is_root() {
+            return Err(Error::invalid_argument("cannot delete the root"));
+        }
+        let path = self.os_path(p);
+        let md = fs::symlink_metadata(&path).map_err(|e| self.err(&e, p))?;
+        if !md.is_dir() || md.file_type().is_symlink() {
+            return Err(Error::invalid_argument("not a folder").with_path(p.display()));
+        }
+        // `rmdir` / RemoveDirectory refuse a folder that has anything in it, atomically
+        let mut r = fs::remove_dir(&path);
+        if r.is_err() && cfg!(windows) && md.permissions().readonly() {
+            clear_readonly(&path, &md);
+            r = fs::remove_dir(&path);
+        }
+        match r {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(false),
+            Err(e) => Err(self.err(&e, p)),
+        }
     }
 
     fn create_dir(&self, p: &VPath) -> Result<()> {
@@ -379,6 +466,27 @@ impl Vfs for LocalStd {
     fn file_id(&self, p: &VPath) -> Result<Option<(u64, u128)>> {
         let md = fs::symlink_metadata(self.os_path(p)).map_err(|e| self.err(&e, p))?;
         Ok(file_id_of(&md))
+    }
+
+    fn ancestor_ids(&self) -> Result<Vec<(u64, u128)>> {
+        // decision D68: without the parents' identities a folder and a folder inside it look
+        // unrelated, and a Mirror between them deletes files it just compared
+        #[cfg(unix)]
+        {
+            let canon = fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+            let mut out = Vec::new();
+            for a in canon.ancestors().skip(1) {
+                let md = fs::metadata(a).map_err(|e| Error::from_io(&e, a))?;
+                if let Some(id) = file_id_of(&md) {
+                    out.push(id);
+                }
+            }
+            Ok(out)
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Vec::new())
+        }
     }
 
     fn storage_id(&self) -> usize {

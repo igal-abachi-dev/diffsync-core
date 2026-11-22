@@ -140,6 +140,8 @@ pub struct Plan {
     pub unresolved_prompts: Vec<NodeId>,
     pub issues: Vec<PlanIssue>,
     pub skipped_links: Vec<NodeId>,
+    /// Items the user marked as ignored; nothing is planned for them or below them.
+    pub ignored: Vec<NodeId>,
     pub summary: Summary,
     pub rules: SyncRules,
     /// True when a filter or hidden/system skip was active at compare time (§9.4).
@@ -244,6 +246,7 @@ fn build(
             unresolved_prompts: Vec::new(),
             issues: Vec::new(),
             skipped_links: Vec::new(),
+            ignored: Vec::new(),
             summary: Summary::default(),
             rules: rules.clone(),
             filters_active: compare.filters_active(),
@@ -314,6 +317,11 @@ impl Builder<'_> {
             for &k in &kids {
                 let n = self.node(k);
                 if n.has(flag::GONE) {
+                    continue;
+                }
+                if n.has(flag::IGNORED) {
+                    // the user marked it (and what is below it) as ignored: left alone
+                    self.plan.ignored.push(k);
                     continue;
                 }
                 if n.has(flag::LINK) {
@@ -582,6 +590,12 @@ impl Builder<'_> {
         while let Some((x, visited)) = stack.pop() {
             let n = self.node(x);
             if n.has(flag::GONE) {
+                continue;
+            }
+            if n.has(flag::IGNORED) {
+                // marked by the user: left alone with everything below it; the folders above it
+                // are then kept by the non-recursive removal
+                self.plan.ignored.push(x);
                 continue;
             }
             if n.is_dir() && !visited {

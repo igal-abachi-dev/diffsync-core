@@ -9,6 +9,7 @@ members = [
     "crates/core-folder",
     "crates/core-sync",
     "crates/core-tools",
+    "crates/shell-ext",
     "crates/core-ffi",
     "tools/dsdev",
     "tools/xtask",

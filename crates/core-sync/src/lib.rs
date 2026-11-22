@@ -6,6 +6,7 @@ pub mod fileops;
 pub mod log;
 pub mod plan;
 pub mod rules;
+pub mod save;
 pub mod sweep;
 
 pub use exec::{
@@ -15,8 +16,9 @@ pub use exec::{
 };
 pub use fileops::{
     FileOpOptions, copy_items, delete_items, move_items, plan_copy_items, plan_delete_items,
-    plan_move_items,
+    plan_move_items, plan_rename_item, rename_item,
 };
 pub use plan::{Action, ActionKind, Fingerprint, Plan, PlanIssue, Severity, Summary, build_plan};
 pub use rules::{Op, PRESETS, Preset, SyncRules};
+pub use save::{SaveOptions, SaveReport, save_file, save_in_place};
 pub use sweep::{SweepReport, maintenance_sweep};

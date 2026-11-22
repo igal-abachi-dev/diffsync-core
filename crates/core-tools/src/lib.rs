@@ -7,16 +7,22 @@
 //! what comes out.
 #![forbid(unsafe_code)]
 
+pub mod apply;
+pub mod bindiff;
 pub mod diffargs;
 pub mod invoke;
+pub mod jsonpatch;
+pub mod mbox;
 pub mod merge;
 pub mod run;
 pub mod selection;
+pub mod shell;
 
-pub use diffargs::{ArgError, Dialect, DiffRequest, parse_diff_args};
+pub use diffargs::{ArgError, Dialect, DiffRequest, Emit, parse_diff_args};
 pub use invoke::{
     CompareInvocation, GitExternalDiff, Invocation, MergeInvocation, Parsed, parse_invocation,
 };
+pub use mbox::MailMeta;
 pub use merge::{MergeFilesResult, MergeOutcome, merge_files, merge3};
 pub use run::{DiffOutput, RunOptions, run, run_texts};
 pub use selection::{Selection, SelectionStore};

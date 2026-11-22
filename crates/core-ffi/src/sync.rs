@@ -507,6 +507,41 @@ pub unsafe extern "C" fn ds_fileops_move(
     })
 }
 
+/// Renames a file or folder as a job: `new_name` is a name, not a path. A name that exists, an
+/// invalid name and a path are refused before anything happens; a change of case alone is allowed
+/// on a case-insensitive file system.
+///
+/// # Safety
+/// All pointers must be valid for the lengths given; `out_job` for a write.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ds_fileops_rename(
+    item: DsStr16,
+    new_name: DsStr16,
+    opts_json: DsStr8,
+    cb: DsEventFn,
+    user: *mut c_void,
+    out_job: *mut DsHandle,
+) -> DsStatus {
+    ffi_entry!({
+        // SAFETY: the ABI contract covers every pointer argument.
+        let (it, nn, json, outp) = unsafe {
+            (
+                units(item)?,
+                units(new_name)?,
+                json_arg(opts_json)?,
+                out(out_job)?,
+            )
+        };
+        let name = String::from_utf16(nn)
+            .map_err(|_| Fail::invalid("the new name contains an unpaired surrogate"))?;
+        let o = options::fileop_options(json)?;
+        let bridge = Bridge::new(cb, user);
+        let job = core_sync::rename_item(&loc_for(it)?, &name, o, Some(job_sink(&bridge)))?;
+        *outp = new_job(job, &bridge);
+        Ok(())
+    })
+}
+
 /// Deletes items as a job (to the Recycle Bin with `"useRecycleBin": true`).
 ///
 /// # Safety

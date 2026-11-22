@@ -10,12 +10,28 @@
 //! `--exclude`, `--label`, `--minimal`, `--patience`, `--histogram`, `--brief`, `--recursive`,
 //! `--new-file`, `--ignore-*`, `--show-c-function`, `--report-identical-files`; short flags may be
 //! combined (`-ruN`) and take their value attached or separate (`-U3`, `-U 3`).
+//! Patch shapes of the core: `--search-replace`, `--format-patch` (with `--subject --author --patch-date
+//! --message`).
 //! Git: `--no-index --stat --numstat --shortstat --name-only --name-status -U<n> --unified=<n>
 //! --diff-algorithm=<a> --ignore-cr-at-eol --exit-code --quiet --no-prefix --src-prefix --dst-prefix
 //! --no-color --color`.
 
 use core_diff::options::{AlignmentName, EolName, WhitespaceName};
 use core_folder::udiff::{PatchFormat, Report};
+
+use crate::mbox::MailMeta;
+
+/// What the run prints: the diff itself, or the same changes in another shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Emit {
+    /// `diff` / `git diff` output (`format` and `report` decide which).
+    #[default]
+    Diff,
+    /// SEARCH/REPLACE blocks (`--search-replace`), the edit format models write well.
+    SearchReplace,
+    /// A git mailbox patch (`--format-patch`), what `git format-patch` writes and `git am` reads.
+    Mbox,
+}
 
 /// Which program's flags and output conventions to follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -58,6 +74,10 @@ pub struct DiffRequest {
     /// `--no-prefix` / `--src-prefix` / `--dst-prefix` (git).
     pub src_prefix: String,
     pub dst_prefix: String,
+    /// `--search-replace` / `--format-patch`.
+    pub emit: Emit,
+    /// `--subject`, `--author`, `--patch-date`, `--message`: the mail of `--format-patch`.
+    pub mail: MailMeta,
 }
 
 impl DiffRequest {
@@ -85,6 +105,8 @@ impl DiffRequest {
             quiet: false,
             src_prefix: "a/".into(),
             dst_prefix: "b/".into(),
+            emit: Emit::Diff,
+            mail: MailMeta::default(),
         }
     }
 }
@@ -222,6 +244,12 @@ pub fn parse_diff_args(args: &[String], dialect: Dialect) -> Result<DiffRequest,
                     req.src_prefix.clear();
                     req.dst_prefix.clear();
                 }
+                "search-replace" => req.emit = Emit::SearchReplace,
+                "format-patch" | "mbox" => req.emit = Emit::Mbox,
+                "subject" => req.mail.subject = take(&mut it)?,
+                "author" => req.mail.author = take(&mut it)?,
+                "patch-date" => req.mail.date = take(&mut it)?,
+                "message" => req.mail.message = take(&mut it)?,
                 "src-prefix" => req.src_prefix = take(&mut it)?,
                 "dst-prefix" => req.dst_prefix = take(&mut it)?,
                 // accepted and without effect: this output is never colored or paged
@@ -344,6 +372,11 @@ pub fn parse_diff_args(args: &[String], dialect: Dialect) -> Result<DiffRequest,
     {
         // GNU's default is the normal format; `-u`/`-U` turned unified on, so this is the default case
         req.format = PatchFormat::Normal;
+    }
+    if req.emit != Emit::Diff && req.format != PatchFormat::Unified {
+        // a mailbox patch is unified; blocks are made from unified hunks with context
+        req.format = PatchFormat::Unified;
+        req.context = 3;
     }
     if req.format == PatchFormat::Normal {
         // the normal format has no context lines

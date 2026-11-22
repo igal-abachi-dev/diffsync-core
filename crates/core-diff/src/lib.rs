@@ -3,8 +3,11 @@
 #![forbid(unsafe_code)]
 
 pub mod align;
+pub mod edit;
 pub mod exact;
 pub mod options;
+pub mod patch;
+pub mod searchreplace;
 pub mod session;
 pub mod udiff;
 

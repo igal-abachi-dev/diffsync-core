@@ -279,3 +279,134 @@ fn sweep_finds_leftover_temp_files_and_deletes_only_on_request() {
             .is_cancelled()
     );
 }
+
+#[test]
+fn rename_gives_a_file_or_a_folder_another_name_and_never_replaces() {
+    use core_sync::{plan_rename_item, rename_item};
+    let m = tree();
+    let v = arc(m.clone());
+    let job = rename_item(
+        &at(&v, "src/a.txt"),
+        "renamed.txt",
+        FileOpOptions::default(),
+        None,
+    )
+    .unwrap();
+    let r = job.wait();
+    assert_eq!((r.failed, r.done), (0, 1), "{r:?}");
+    assert!(m.read("src/a.txt").is_none());
+    assert_eq!(m.read("src/renamed.txt").unwrap(), b"aaa");
+    // a folder keeps what is inside it
+    rename_item(&at(&v, "src/dir"), "folder", FileOpOptions::default(), None)
+        .unwrap()
+        .wait();
+    assert_eq!(m.read("src/folder/b.txt").unwrap(), b"bb");
+    assert_eq!(m.read("src/folder/deep/c.txt").unwrap(), b"c");
+    // a name that exists, the same name, a path, and invalid names are refused before anything runs
+    m.add_file("src/other.txt", b"o", T0);
+    for (item, name, kind) in [
+        ("src/renamed.txt", "other.txt", ErrorKind::AlreadyExists),
+        ("src/renamed.txt", "renamed.txt", ErrorKind::InvalidArgument),
+        ("src/renamed.txt", "a/b.txt", ErrorKind::InvalidName),
+        ("src/renamed.txt", "", ErrorKind::InvalidName),
+        ("src/renamed.txt", "..", ErrorKind::InvalidName),
+    ] {
+        let e = plan_rename_item(&at(&v, item), name).unwrap_err();
+        assert_eq!(e.kind(), kind, "{name}: {e}");
+    }
+    assert!(plan_rename_item(&at(&v, "src/missing.txt"), "x").is_err());
+    assert!(plan_rename_item(&at(&v, ""), "x").is_err());
+    // a case-only change is a rename on a case-insensitive file system, a sibling clash is not
+    let ci = arc(MemVfs::new().case_insensitive());
+    let _ = ci;
+    let m2 = MemVfs::new().case_insensitive();
+    m2.add_file("File.txt", b"1", T0)
+        .add_file("other.txt", b"2", T0);
+    let v2 = arc(m2.clone());
+    assert!(plan_rename_item(&at(&v2, "File.txt"), "FILE.TXT").is_ok());
+    let e = plan_rename_item(&at(&v2, "File.txt"), "OTHER.txt").unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::AlreadyExists);
+}
+
+/// Decision D64: a move to another volume copies what it can, and a link was never copied, so it
+/// is never deleted: it stays, and its folder stays with it. A link moved on its own is refused.
+#[test]
+fn a_cross_volume_move_never_deletes_a_link_it_did_not_copy() {
+    let (a, b) = (MemVfs::new(), MemVfs::new());
+    a.add_file("src/file.txt", b"data", T0)
+        .add_link("src/lnk", Kind::File)
+        .add_dir("dst0", 0);
+    b.add_dir("dst", 0).add_link("dst/src", Kind::File); // an unrelated link of the same name
+    let (va, vb) = (arc(a.clone()), arc(b.clone()));
+    let steps = core_sync::plan_move_items(
+        &[at(&va, "src")],
+        &at(&vb, "dst"),
+        &FileOpOptions::default(),
+    );
+    // the destination name is taken by a link: refused before anything happens
+    assert!(steps.is_err());
+    vb.delete(&p("dst/src"), core_vfs::DeleteMode::Permanent)
+        .unwrap();
+    let steps = core_sync::plan_move_items(
+        &[at(&va, "src")],
+        &at(&vb, "dst"),
+        &FileOpOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        steps
+            .iter()
+            .filter(|s| s.kind == StepKind::Delete)
+            .all(|s| !s.dst.path.display().contains("lnk")),
+        "a delete step for the link: {:?}",
+        steps
+            .iter()
+            .map(|s| s.dst.path.display())
+            .collect::<Vec<_>>()
+    );
+    let res = core_sync::move_items(
+        &[at(&va, "src")],
+        &at(&vb, "dst"),
+        FileOpOptions::default(),
+        None,
+    )
+    .unwrap()
+    .wait();
+    assert_eq!(res.failed, 0, "{res:?}");
+    assert_eq!(b.read("dst/src/file.txt").unwrap(), b"data");
+    assert!(a.read("src/file.txt").is_none(), "the copied file is moved");
+    assert!(
+        a.paths().iter().any(|p| p.contains("lnk")),
+        "the link stays: {:?}",
+        a.paths()
+    );
+    // a link on its own cannot cross a volume
+    let e = core_sync::plan_move_items(
+        &[at(&va, "src/lnk")],
+        &at(&vb, "dst"),
+        &FileOpOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::Unsupported);
+}
+
+/// A case-only rename on a case-insensitive file system really runs (it goes through a temporary
+/// name; "the destination is absent" cannot hold when the new name is the same item).
+#[test]
+fn a_case_only_rename_is_executed() {
+    use core_sync::rename_item;
+    let m = MemVfs::new().case_insensitive();
+    m.add_file("File.txt", b"1", T0);
+    let v = arc(m.clone());
+    let res = rename_item(
+        &at(&v, "File.txt"),
+        "FILE.TXT",
+        FileOpOptions::default(),
+        None,
+    )
+    .unwrap()
+    .wait();
+    assert_eq!((res.failed, res.done), (0, 2), "{res:?}");
+    assert_eq!(m.paths(), vec!["FILE.TXT".to_string()]);
+    assert_eq!(m.read("file.txt").unwrap(), b"1");
+}

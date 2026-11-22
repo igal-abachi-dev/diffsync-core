@@ -527,7 +527,46 @@ fn apply_view_json(view: &mut FolderView, tree: &core_folder::Tree, json: &str) 
     if let Some(f) = filter {
         view.set_filter(tree, f);
     }
+    if let Some(on) = v.ignore_unimportant {
+        view.set_ignore_unimportant(tree, on);
+    }
+    if let Some(on) = v.show_ignored {
+        view.set_show_ignored(tree, on);
+    }
     Ok(())
+}
+
+/// Marks items as ignored (hidden from views that do not show ignored items, left alone by a sync
+/// plan, with everything below them), or takes the mark off. Views pick the change up on their
+/// next call. The root cannot be ignored.
+///
+/// # Safety
+/// `nodes` must be valid for `n` entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ds_folder_set_ignored(
+    h: DsHandle,
+    nodes: *const u32,
+    n: u32,
+    ignored: u8,
+) -> DsStatus {
+    ffi_entry!({
+        let f = registry::folder(h)?;
+        // SAFETY: the ABI contract covers the array.
+        let ids: Vec<NodeId> = unsafe { slice(nodes, n as usize) }?.to_vec();
+        check_nodes(&f, &ids)?;
+        if ids.contains(&0) {
+            return Err(Fail::invalid("the root cannot be ignored"));
+        }
+        let c = f.ready()?;
+        {
+            let mut g = c.write();
+            for id in &ids {
+                g.set_ignored(*id, ignored != 0)?;
+            }
+        }
+        f.revision.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
 }
 
 /// Creates a flat view over a finished folder compare. The compare must be done (`DS_E_BUSY`

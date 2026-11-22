@@ -227,6 +227,19 @@ impl<V: Vfs> Vfs for FaultVfs<V> {
         self.inner.delete(p, mode)
     }
 
+    fn sync_file(&self, p: &VPath) -> Result<()> {
+        self.inner.sync_file(p)
+    }
+
+    fn sync_parent(&self, p: &VPath) -> Result<()> {
+        self.inner.sync_parent(p)
+    }
+
+    fn remove_dir_if_empty(&self, p: &VPath) -> Result<bool> {
+        self.enter(Op::Delete, p)?;
+        self.inner.remove_dir_if_empty(p)
+    }
+
     fn create_dir(&self, p: &VPath) -> Result<()> {
         self.enter(Op::CreateDir, p)?;
         self.inner.create_dir(p)

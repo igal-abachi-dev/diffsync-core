@@ -83,7 +83,15 @@ impl SyncRules {
     pub fn op_for(&self, status: Status) -> Op {
         // `UnimportantDiff` counts as `Same` unless `copy_unimportant` turns it into `Different`
         let status = match status {
-            Status::UnimportantDiff if self.copy_unimportant => Status::Different,
+            // decision D67: a Mirror makes the destination identical, so a difference the compare
+            // calls unimportant (white space, comments) is still a difference to copy; a
+            // re-indented Python file or a YAML file with other nesting is a different program
+            Status::UnimportantDiff
+                if self.copy_unimportant
+                    || matches!(self.preset, Preset::MirrorToRight | Preset::MirrorToLeft) =>
+            {
+                Status::Different
+            }
             Status::UnimportantDiff => Status::Same,
             s => s,
         };
@@ -150,7 +158,8 @@ mod tests {
         };
         let table: [(Status, [Op; 5]); 8] = [
             (Status::Same, [L, L, L, L, L]),
-            (Status::UnimportantDiff, [L, L, L, L, L]),
+            // decision D67 changes this row for the two Mirror presets (it was all Leave)
+            (Status::UnimportantDiff, [L, L, L, CR, CL]),
             (Status::Different, [P, P, P, CR, CL]),
             (Status::LeftNewer, [CR, L, CR, CR, CL]),
             (Status::RightNewer, [L, CL, CL, CR, CL]),
@@ -175,11 +184,14 @@ mod tests {
 
     #[test]
     fn copy_unimportant_turns_unimportant_into_different() {
+        // a Mirror copies unimportant differences whatever the flag says (decision D67)
         let mut r = SyncRules::from_preset(Preset::MirrorToRight);
-        assert_eq!(r.op_for(Status::UnimportantDiff), Op::Leave);
+        assert_eq!(r.op_for(Status::UnimportantDiff), Op::CopyToRight);
         r.copy_unimportant = true;
         assert_eq!(r.op_for(Status::UnimportantDiff), Op::CopyToRight);
+        // an Update preset leaves them alone until the flag is set
         let mut u = SyncRules::from_preset(Preset::UpdateBoth);
+        assert_eq!(u.op_for(Status::UnimportantDiff), Op::Leave);
         u.copy_unimportant = true;
         assert_eq!(u.op_for(Status::UnimportantDiff), Op::Prompt);
     }

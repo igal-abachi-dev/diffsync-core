@@ -93,9 +93,14 @@ fn a_cross_volume_move_over_an_equal_size_file_never_deletes_a_source_whose_copy
     let df = fault(dst.clone());
     df.fail_nth(Op::CreateTemp, 1, ErrorKind::SharingViolation);
     let (sv, dv): (Arc<dyn Vfs>, Arc<dyn Vfs>) = (arc(src.clone()), df);
+    // a one-shot sharing violation would be retried silently (D57): this test is about a copy that
+    // does fail, so the executor's own retries are off
     let o = FileOpOptions {
         overwrite: true,
-        ..FileOpOptions::default()
+        exec: core_sync::ExecOptions {
+            copy_retries: 0,
+            ..core_sync::ExecOptions::default()
+        },
     };
     let job = move_items(&[at(&sv, "f.txt")], &at(&dv, ""), o, None).unwrap();
     let res = run_with_answers(&job, Answer::Skip);
@@ -284,6 +289,9 @@ fn an_unwritable_log_folder_is_reported_in_the_result() {
         &c,
         ExecOverrides {
             log_dir: Some(not_a_dir),
+            // decision D66: by default a log that cannot be created stops the job; this test is
+            // about the caller that chose to run without the guarantee
+            log_required: Some(false),
             ..ExecOverrides::default()
         },
     );

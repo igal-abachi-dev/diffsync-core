@@ -13,8 +13,10 @@ status in the same change.
 
 `diffsync-core` is a Rust engine for text compare, folder compare, folder sync and file
 operations, exposed through a C ABI (`diffsync_core.dll`). The desktop UI, **DeltaForge**, is a
-separate later project written in **Avalonia (C#)**. A product CLI is also later. Neither
-lives here.
+separate later project written in **Avalonia (C#)**. The product command-line program is also
+later and is the owner's; what it calls lives here (`core-tools`: diff command lines, tool
+invocations, ignore lists, merge stub, the Explorer selection). The Windows Explorer context-menu
+handler (`crates/shell-ext`) lives here too, as a thin COM layer over `core-tools::shell`.
 
 - **v1** is a faithful baseline of the mechanics in `reference_source/MECHANICS.md`, plus
   the blueprint fixes B1–B8 and our decisions D1–D18 (`plan.md` §0.3, §11.2).
@@ -45,12 +47,21 @@ If you find a new case the spec doesn't settle, don't guess silently. Add a `D19
 ```
 crates/core-base     errors, cancel/pause, progress, CRC-32, FILETIME ticks
 crates/core-text     decode, line index, line rules, LineMeta
-crates/core-diff     aligner (Standard/Patience/Myers/Histogram/None), exact engines, text session
+crates/core-diff     aligner (Standard/Patience/Myers/Histogram/None), exact engines, text session,
+                     patch output (udiff), patch parsing and applying (patch), SEARCH/REPLACE blocks,
+                     the edit model (edit: EditDoc, Editor, range edits)
 crates/core-vfs      Vfs trait, LocalWin32, LocalStd, MemVfs, FaultVfs, copy engine, root parsing
 crates/core-glob     glob patterns, brace expansion, include/exclude rule sets, walker
 crates/core-folder   folder compare tree, rules, content compare, views
-crates/core-sync     sync plan/execute, file operations, execution log
+crates/core-sync     sync plan/execute, file operations (copy, move, delete, rename), execution log,
+                     saving an edited file (save)
+crates/core-tools    CLI/MCP support: diff args + run (GNU/git output), external-tool protocol, ignore
+                     lists, Explorer selection and menu logic, three-way merge stub, applying patches
+                     to files (apply), JSON Patch, byte compare, git mailbox output
 crates/core-ffi      C ABI → diffsync_core.dll (+ cbindgen header, csbindgen C# bindings)
+crates/shell-ext     diffsync_shell.dll: Explorer IExplorerCommand handler (COM glue only)
+scripts/             build-core.ps1/.cmd (DLL, shell ext, dist/), shell/ registration scripts
+shell/               AppxManifest.xml (sparse package for the Windows 11 menu)
 tools/dsdev          developer CLI (debug, golden, render) — not the product CLI
 tools/xtask          codegen, binding checks, glob-diff, benches
 tests/               fixtures, golden values, review corpus, C smoke test
@@ -58,7 +69,7 @@ docs/                spec, decisions ledger, ABI notes
 ```
 
 Dependencies point strictly downward:
-base → text/vfs → diff/glob → folder → sync → ffi.
+base → text/vfs → diff/glob → folder → sync, tools → ffi (shell-ext sits on tools).
 `core-diff` must not touch the file system.
 
 ## Commands
@@ -73,6 +84,8 @@ cargo xtask bindings                  # regenerate include/diffsync.h + bindings
 cargo xtask bindings --check          # CI: fail if generated files are stale
 cargo xtask glob-diff                 # core-glob vs the C# Glob library
 cargo bench -p core-diff              # criterion; budgets in plan.md §12.2
+cargo xtask bench                     # every budget of plan.md §12.2 (fails on a miss)
+scripts/build-core.cmd -Shell         # DLL + shell extension into dist/ (see docs/integration.md)
 cargo run -p dsdev -- golden all      # golden values (plan.md §11.3)
 cargo run -p dsdev -- render <case> --html
 ```
@@ -92,8 +105,8 @@ crate you touched. Report failures as they are; don't skip or weaken a test to g
 - **No exceptions as control flow and no unbounded recursion.** Return enums; use explicit
   stacks.
 - **`unsafe`** is allowed only in `core-vfs::local_win32`, `core-text` (the `mmap` module and
-  the one-line `GetACP` declaration in `ansi`) and `core-ffi`. Every block gets a
-  `// SAFETY:` comment.
+  the one-line `GetACP` declaration in `ansi`), `core-ffi` and `shell-ext` (COM). Every block gets
+  a `// SAFETY:` comment.
 - **Errors**: `core_base::Error` with an `ErrorKind`. Keep OS error codes and paths. No
   `unwrap()`/`expect()` outside tests, except where the invariant is proven and commented.
 - **Threads**: never block the caller of a read function (`get_rows`, `status`). Long work

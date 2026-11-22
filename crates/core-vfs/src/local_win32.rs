@@ -32,7 +32,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     OPEN_EXISTING, RemoveDirectoryW, SetFileAttributesW, SetFileTime, WIN32_FIND_DATAW,
 };
 
-use crate::copy::{rename_with_retry, temp_sibling_name, verify_crc};
+use crate::copy::{check_destination_unchanged, rename_with_retry, temp_sibling_name, verify_crc};
 use crate::path::{Name, VPath};
 use crate::root::VfsRoot;
 use crate::vfs::{CopyOptions, DeleteMode, Entry, Kind, Progress, ReadSeek, Vfs, VfsCaps, attr};
@@ -68,6 +68,32 @@ pub struct LocalWin32 {
     case_sensitive_volume: bool,
     /// The volume is a rotating disk (decision: D54).
     seek_penalty: bool,
+}
+
+/// Free and total space of the volume that holds `path` (backlog E11.5-S9.3: the status bar of a
+/// folder compare shows "1.5 TB free on D:"). `free` is what the calling user may use (quotas
+/// count), `total` the size of the volume.
+pub fn volume_space(path: &std::path::Path) -> Result<(u64, u64)> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut wide: Vec<u16> =
+        std::os::windows::ffi::OsStrExt::encode_wide(path.as_os_str()).collect();
+    wide.push(0);
+    let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+    // SAFETY: `wide` is NUL-terminated; the three out pointers are valid for a write.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &raw mut free,
+            &raw mut total,
+            &raw mut total_free,
+        )
+    };
+    if ok == 0 {
+        return Err(
+            last_error("GetDiskFreeSpaceExW", &VPath::root()).with_path(path.display().to_string())
+        );
+    }
+    Ok((free, total))
 }
 
 /// decision: D54: whether the drive `letter` is a rotating disk, asked the way the OS defrag tool
@@ -472,7 +498,7 @@ impl Vfs for LocalWin32 {
             // would carry new content with the old time
             match self.stat(src) {
                 Ok(Some(now)) if (now.size, now.mtime) == (se.size, se.mtime) => {
-                    self.finish_native(src, &tmp, dst, existing.map(|e| e.attrs), o)
+                    self.finish_native(src, &tmp, dst, existing.as_ref(), o)
                 }
                 Ok(_) => Err(Error::new(
                     ErrorKind::ChangedSinceCompare,
@@ -487,6 +513,70 @@ impl Vfs for LocalWin32 {
             let _ = self.delete(&tmp, DeleteMode::Permanent);
         }
         result
+    }
+
+    fn sync_file(&self, p: &VPath) -> Result<()> {
+        let os = self.os(p);
+        // a read-only file (a copy of a read-only source) cannot be opened for write: make it
+        // writable for the moment and put the attribute back
+        let mut restore = None;
+        let f = match std::fs::OpenOptions::new().write(true).open(&os) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let md = std::fs::metadata(&os).map_err(|e| Error::from_io(&e, &os))?;
+                if !md.permissions().readonly() {
+                    return Err(Error::from_io(&e, &os));
+                }
+                restore = Some(md.permissions());
+                let mut w = md.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                // intended: a read-only file must be flushable
+                w.set_readonly(false);
+                std::fs::set_permissions(&os, w).map_err(|e| Error::from_io(&e, &os))?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&os)
+                    .map_err(|e| Error::from_io(&e, &os))?
+            }
+            Err(e) => return Err(Error::from_io(&e, &os)),
+        };
+        let r = f.sync_all().map_err(|e| Error::from_io(&e, &os)); // FlushFileBuffers
+        drop(f);
+        if let Some(perm) = restore {
+            let _ = std::fs::set_permissions(&os, perm);
+        }
+        r
+    }
+
+    fn remove_dir_if_empty(&self, p: &VPath) -> Result<bool> {
+        if p.is_root() {
+            return Err(Error::invalid_argument("cannot delete the root"));
+        }
+        let e = self.stat(p)?.ok_or_else(|| {
+            Error::new(ErrorKind::NotFound, "no such folder").with_path(p.display())
+        })?;
+        if e.kind != Kind::Dir {
+            return Err(Error::invalid_argument("not a folder").with_path(p.display()));
+        }
+        let w = self.wide(p);
+        // SAFETY: `w` is NUL-terminated and valid for the call. RemoveDirectory fails with
+        // ERROR_DIR_NOT_EMPTY when anything is inside, and never removes more than the folder.
+        let mut ok = unsafe { RemoveDirectoryW(w.as_ptr()) };
+        if ok == 0 && e.attrs & attr::READONLY != 0 {
+            // SAFETY: as above.
+            unsafe { SetFileAttributesW(w.as_ptr(), FILE_ATTRIBUTE_NORMAL) };
+            // SAFETY: as above.
+            ok = unsafe { RemoveDirectoryW(w.as_ptr()) };
+        }
+        if ok != 0 {
+            return Ok(true);
+        }
+        // SAFETY: GetLastError has no preconditions.
+        let code = unsafe { GetLastError() };
+        if code == 145 {
+            return Ok(false); // ERROR_DIR_NOT_EMPTY
+        }
+        Err(last_error("delete failed", p))
     }
 
     fn rename(&self, from: &VPath, to: &VPath, replace: bool) -> Result<()> {
@@ -701,9 +791,10 @@ impl LocalWin32 {
         src: &VPath,
         tmp: &VPath,
         dst: &VPath,
-        old_attrs: Option<u32>,
+        existing: Option<&Entry>,
         o: &CopyOptions,
     ) -> Result<()> {
+        let old_attrs = existing.map(|e| e.attrs);
         if o.verify {
             let mut r = self.open_read(src)?;
             let mut crc = core_base::crc32::FileCrc::new();
@@ -722,6 +813,10 @@ impl LocalWin32 {
             if let Some(e) = self.stat(src)? {
                 self.set_times(tmp, None, Some(e.ctime))?;
             }
+        }
+        check_destination_unchanged(self, dst, existing)?;
+        if o.durable {
+            self.sync_file(tmp)?;
         }
         rename_with_retry(self, tmp, dst, old_attrs, o)
     }

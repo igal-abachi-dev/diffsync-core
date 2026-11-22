@@ -27,6 +27,8 @@ struct Node {
 
 #[derive(Debug)]
 struct State {
+    /// The backend gives no file IDs (a FAT-like volume): overlap checks cannot conclude.
+    no_ids: bool,
     nodes: HashMap<String, Node>,
     case_sensitive: bool,
     windows_names: bool,
@@ -152,6 +154,7 @@ impl MemVfs {
                     nodes,
                     case_sensitive: true,
                     windows_names: false,
+                    no_ids: false,
                     seek_penalty: false,
                     next_id: 1,
                 }),
@@ -180,6 +183,14 @@ impl MemVfs {
     #[must_use]
     pub fn windows_names(self) -> Self {
         self.inner.state.lock().windows_names = true;
+        self
+    }
+
+    /// Makes the backend give no file IDs, like a FAT or exFAT volume, so the checks that need
+    /// them (nested roots, a file copied onto itself) cannot conclude.
+    #[must_use]
+    pub fn without_file_ids(self) -> Self {
+        self.inner.state.lock().no_ids = true;
         self
     }
 
@@ -541,6 +552,26 @@ impl Vfs for MemVfs {
         Ok(())
     }
 
+    fn remove_dir_if_empty(&self, p: &VPath) -> Result<bool> {
+        if p.is_root() {
+            return Err(Error::invalid_argument("cannot delete the root"));
+        }
+        // one lock for the check and the removal: nothing can be added in between
+        let mut st = self.inner.state.lock();
+        let key = st.key(p);
+        match st.nodes.get(&key) {
+            None => return Err(nf(p)),
+            Some(n) if n.kind != Kind::Dir => {
+                return Err(Error::invalid_argument("not a folder").with_path(p.display()));
+            }
+            Some(n) if !n.children.is_empty() => return Ok(false),
+            Some(_) => {}
+        }
+        st.detach(p);
+        st.remove_subtree(&key);
+        Ok(true)
+    }
+
     fn create_dir(&self, p: &VPath) -> Result<()> {
         let mut st = self.inner.state.lock();
         if let Some(n) = st.nodes.get(&st.key(p)) {
@@ -586,9 +617,10 @@ impl Vfs for MemVfs {
 
     fn file_id(&self, p: &VPath) -> Result<Option<(u64, u128)>> {
         let st = self.inner.state.lock();
+        let no_ids = st.no_ids;
         st.nodes
             .get(&st.key(p))
-            .map(|n| Some((self.volume(), n.file_id)))
+            .map(|n| (!no_ids).then_some((self.volume(), n.file_id)))
             .ok_or_else(|| nf(p))
     }
 

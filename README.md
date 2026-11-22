@@ -75,6 +75,19 @@ an Avalonia app, a native shell extension, a CLI or your own tool.
   name rules (reserved names, invalid characters, case collisions) are checked in the
   preview.
 
+### Integration
+- **Patch output** the way people and models read it: `diff -u`, `diff -c`, `diff -r`, `git diff
+  --no-index`, `--stat`, `--name-status`, and a JSON form of the hunks. Equal to GNU diff and git on
+  the shapes the tests compare, with the same exit codes.
+- **Source-control tools**: SourceTree and `git difftool`/`mergetool`/`GIT_EXTERNAL_DIFF` start the
+  tool with the arguments they already use; lock files (`*package-lock.json`, ...) can be skipped.
+  The three-way merge is a stub for now (see `docs/integration.md`).
+- **Windows Explorer**: right-click a file or folder, "Select left side", then "Compare with ...".
+- **Build script**: `scripts/build-core.cmd` builds the DLL (and the shell extension) into `dist/`.
+
+See [`docs/integration.md`](docs/integration.md), [`docs/ui-gap-analysis.md`](docs/ui-gap-analysis.md)
+and [`docs/copy-review.md`](docs/copy-review.md).
+
 ### Engine qualities
 - No per-line heap allocation. Compact arenas: about 16 bytes per text line and about
   136 bytes per folder entry.
@@ -192,11 +205,12 @@ an event pump that can post to the UI thread. This example is also a test
 ```csharp
 using DiffSync.Native;
 
-// Events arrive on core threads. `post` moves them to yours, e.g. Dispatcher.UIThread.Post.
+// Events arrive on core threads. `post` moves them to yours: in Avalonia pass Dispatcher.UIThread.Post
+// (and keep the handler to "redraw"); `action => action()` runs the handler on the core thread.
 using var cmp = TextCompare.Open(@"C:\a\Program.cs", @"C:\b\Program.cs",
     optionsJson: """{ "alignment": "standard" }""",
     onEvent: e => { if (e.Kind == EventKind.Rows) { /* ask the view to repaint */ } },
-    post: action => action());
+    post: Dispatcher.UIThread.Post);
 
 // Pull what the grid shows; the call never waits for the alignment.
 var rows = new TextRow[100];
@@ -255,7 +269,9 @@ ds_close(cmp);                                      /* after this, `on_event` ne
 | `core-glob` | Glob matching and ignore rules (port of the Globbing C# library) |
 | `core-folder` | Folder compare trees, classification, content compare, filtered/sorted views |
 | `core-sync` | Sync presets, plans, execution, file operations |
+| `core-tools` | What a command-line program, an MCP server or a UI calls: `diff`/`git diff` command lines and output (GNU and git style), the SourceTree/git tool protocol, ignore lists, Explorer menu logic, the merge stub |
 | `core-ffi` | The `diffsync_core.dll` C ABI, plus generated C header and C# bindings |
+| `shell-ext` | `diffsync_shell.dll`: the Windows Explorer context menu ("Select left side", "Compare with") |
 
 **Threading.** Each session owns its worker. Shared pools handle CPU work (rayon) and
 I/O. Read calls never wait on work. Callbacks are only wake-up signals, and the UI pulls

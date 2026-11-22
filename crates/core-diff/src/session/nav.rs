@@ -307,6 +307,7 @@ mod tests {
         // two differences close together leave nothing folded between them
         let c = a.replace("line 15\n", "X\n").replace("line 19\n", "Y\n");
         let tc = cmp(&a, &c);
+        // differences at rows 14 and 18: rows 19..=21 stay visible, 22.. folds
         assert_eq!(
             tc.folds(3, false),
             [
@@ -315,8 +316,8 @@ mod tests {
                     row_count: 11
                 },
                 Fold {
-                    first_row: 23,
-                    row_count: 7
+                    first_row: 22,
+                    row_count: 8
                 }
             ]
         );

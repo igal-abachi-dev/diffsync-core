@@ -12,12 +12,13 @@
 #include <stddef.h>
 
 /**
- * The ABI version: `major << 16 | minor`. Frozen at 1.0 (backlog E10-S3, docs/abi.md): additive
- * changes bump the minor, a breaking change would bump the major and is avoided.
+ * The ABI version: `major << 16 | minor`. 1.0 was frozen at backlog E10-S3 (docs/abi.md); 1.1 added
+ * the integration exports of E11.5. Additive changes bump the minor, a breaking change would bump
+ * the major and is avoided.
  */
 #define ABI_MAJOR 1
 
-#define ABI_MINOR 0
+#define ABI_MINOR 2
 
 #define DS_EV_STATE 1
 
@@ -331,6 +332,35 @@ typedef struct {
   uint8_t encoding[24];
 } DsDocInfo;
 
+/**
+ * Free and total bytes of a volume (16 bytes).
+ */
+typedef struct {
+  uint64_t free_bytes;
+  uint64_t total_bytes;
+} DsVolumeInfo;
+
+/**
+ * A run of rows the Context view hides (8 bytes).
+ */
+typedef struct {
+  uint32_t first_row;
+  uint32_t row_count;
+} DsFold;
+
+/**
+ * A match of `ds_text_find` (20 bytes): the row, the line on `side` (0 left, 1 right), and the
+ * range in UTF-16 units.
+ */
+typedef struct {
+  uint32_t row;
+  uint32_t line;
+  uint32_t start;
+  uint32_t end;
+  uint8_t side;
+  uint8_t pad[3];
+} DsFindHit;
+
 #define DS_OK 0
 
 #define DS_E_INVALID_ARG -1
@@ -414,6 +444,29 @@ DsStatus ds_close(DsHandle h);
 DsStatus ds_options_schema(DsBuf *out);
 
 /**
+ * One edit: copy rows, a section or the whole text between the sides, replace lines, undo, redo,
+ * convert encoding or line endings, read a side again in another encoding, or ask for the state.
+ * The report holds `changed`, the lines `removed` and `inserted`, the compare's `generation` and
+ * the state of both sides (`dirty`, `canUndo`, `canRedo`, `encoding`, `bom`, `endingCounts`,
+ * `mixedEndings`, `lossy`).
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_text_edit(DsHandle session, DsStr8 request, DsBuf *out_report);
+
+/**
+ * Saves one side: the text in its encoding with its byte order mark and line endings, through a
+ * temporary file and a rename, after checking that the file is still what was read (decision D63).
+ * A refused save changes nothing. Request fields: `side`, `path` (Save As), `mode`,
+ * `backupSuffix`, `overwriteChanged`, `writeReadonly`, `overwriteExisting`, `eol`, `encoding`.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_text_save(DsHandle session, DsStr8 request, DsBuf *out_report);
+
+/**
  * Starts a folder compare of two local folders. Events: `DS_EV_PROGRESS` (`a` done, `b`
  * total), `DS_EV_STATE` (`a` = 1 done, 2 failed, 3 cancelled), `DS_EV_NODE` after changes.
  *
@@ -481,6 +534,16 @@ DsStatus ds_folder_compare_content(DsHandle h, const uint32_t *nodes, uint32_t n
 DsStatus ds_folder_refresh(DsHandle h, const uint32_t *nodes, uint32_t n);
 
 DsStatus ds_folder_cancel(DsHandle h);
+
+/**
+ * Marks items as ignored (hidden from views that do not show ignored items, left alone by a sync
+ * plan, with everything below them), or takes the mark off. Views pick the change up on their
+ * next call. The root cannot be ignored.
+ *
+ * # Safety
+ * `nodes` must be valid for `n` entries.
+ */
+DsStatus ds_folder_set_ignored(DsHandle h, const uint32_t *nodes, uint32_t n, uint8_t ignored);
 
 /**
  * Creates a flat view over a finished folder compare. The compare must be done (`DS_E_BUSY`
@@ -634,6 +697,21 @@ DsStatus ds_fileops_move(DsStr16List items,
                          DsEventFn cb,
                          void *user,
                          DsHandle *out_job);
+
+/**
+ * Renames a file or folder as a job: `new_name` is a name, not a path. A name that exists, an
+ * invalid name and a path are refused before anything happens; a change of case alone is allowed
+ * on a case-insensitive file system.
+ *
+ * # Safety
+ * All pointers must be valid for the lengths given; `out_job` for a write.
+ */
+DsStatus ds_fileops_rename(DsStr16 item,
+                           DsStr16 new_name,
+                           DsStr8 opts_json,
+                           DsEventFn cb,
+                           void *user,
+                           DsHandle *out_job);
 
 /**
  * Deletes items as a job (to the Recycle Bin with `"useRecycleBin": true`).
@@ -799,5 +877,203 @@ DsStatus ds_text_doc_info(DsHandle h, uint8_t side, DsDocInfo *out_info);
 DsStatus ds_text_recompare(DsHandle h, DsStr8 options_json);
 
 DsStatus ds_text_cancel(DsHandle h);
+
+/**
+ * Runs a `diff` or `git diff` command line on the local file system and reports what it would
+ * print: JSON `{stdout, stderr, exitCode, json, ignored}` (`json` is the machine-readable form of
+ * the comparison, itself a JSON document in a string). Request:
+ * `{"args": ["-ru", "a", "b"], "dialect": "gnu", "ignore": "*.lock", "ignoreLockFiles": false}`.
+ * Synchronous: a folder diff of a large tree takes as long as it takes, so call it off the UI thread.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_diff_run(DsStr8 request,
+                     DsBuf *out_report);
+
+/**
+ * Like [`ds_diff_run`] for two texts that are not files (a UI buffer, an MCP tool argument): the
+ * request has `left` and `right` as text, `leftName` and `rightName` for the headers, and `args`
+ * for the flags only (no operands).
+ *
+ * # Safety
+ * As `ds_diff_run`.
+ */
+DsStatus ds_diff_texts(DsStr8 request, DsBuf *out_report);
+
+/**
+ * Parses how another program started the tool: a JSON array of the arguments (after the program
+ * name). The report is `{invocation: {kind, value}, unknown: [...]}` with `kind` one of `compare`,
+ * `merge`, `gitExternalDiff`, `selectLeft`, `compareSelected`. A command line the protocol does not
+ * understand is `DS_E_INVALID_ARG` with the reason in `ds_last_error`.
+ *
+ * # Safety
+ * `args_json` must be valid for its length; `out_report` for a write.
+ */
+DsStatus ds_tool_parse_args(DsStr8 args_json, DsBuf *out_report);
+
+/**
+ * The built-in ignore list (`*package-lock.json,*gemfile.lock,*podfile.lock,*cartfile.resolved`)
+ * as UTF-8 text.
+ *
+ * # Safety
+ * `out_text` must be valid for a write.
+ */
+DsStatus ds_tool_default_ignore(DsBuf *out_text);
+
+/**
+ * Whether `path` is matched by the pattern list (comma, semicolon or line separated; case is
+ * ignored on Windows). `*out_ignored` is 1 or 0.
+ *
+ * # Safety
+ * The views must be valid for their lengths; `out_ignored` for a write.
+ */
+DsStatus ds_tool_is_ignored(DsStr8 patterns, DsStr16 path, uint8_t *out_ignored);
+
+/**
+ * Three-way merge of three texts. **A stub** (docs/abi.md): when only one side changed, or both
+ * made the same change, the report is `{"outcome":"clean","text":...,"reason":...}`; otherwise
+ * `{"outcome":"conflict","reason":...}` and the interactive merge has to decide.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write.
+ */
+DsStatus ds_merge3(DsStr8 request, DsBuf *out_report);
+
+/**
+ * The merge-tool contract of `git mergetool` and SourceTree on files: writes `output` and reports
+ * `{"exitCode":0}` when merged, `{"exitCode":1,"message":...}` when not (the stub of `ds_merge3`
+ * applies), `2` for trouble. Request: `{"local","remote","base","output"}` (absolute paths).
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write.
+ */
+DsStatus ds_merge_files(DsStr8 request, DsBuf *out_report);
+
+/**
+ * Remembers `path` as the left side of the next compare (the Explorer "Select left side").
+ *
+ * # Safety
+ * `path` must be valid for its length.
+ */
+DsStatus ds_shell_selection_set(DsStr16 path);
+
+/**
+ * The remembered left side as JSON `{"left": path, "chosenAt": seconds}`, or an empty buffer when
+ * there is none (never chosen, too old, or the path no longer exists).
+ *
+ * # Safety
+ * `out_selection` must be valid for a write.
+ */
+DsStatus ds_shell_selection_get(DsBuf *out_selection);
+
+/**
+ * Forgets the remembered left side.
+ */
+DsStatus ds_shell_selection_clear(void);
+
+/**
+ * Free and total bytes of the volume that holds `path` (the status bar of a folder compare).
+ * Windows only for now (`DS_E_UNSUPPORTED` elsewhere).
+ *
+ * # Safety
+ * `path` must be valid for its length; `out_info` for a write.
+ */
+DsStatus ds_volume_info(DsStr16 path, DsVolumeInfo *out_info);
+
+/**
+ * The runs of rows the *Context* view hides: rows farther than `context` rows from a difference
+ * (`important_only` != 0: from an important one). Copies folds `first..first + count` into
+ * `out_folds`; `*total` is the number of folds. A file without differences folds completely.
+ *
+ * # Safety
+ * `out_folds` must be valid for `count` entries (or null with `count` 0); `written` and `total`
+ * for writes.
+ */
+DsStatus ds_text_get_folds(DsHandle h,
+                           uint32_t context,
+                           uint8_t important_only,
+                           uint32_t first,
+                           uint32_t count,
+                           DsFold *out_folds,
+                           uint32_t *written,
+                           uint32_t *total);
+
+/**
+ * The kind of sections `first..first + count`: 0 insert (lines only on the right), 1 delete (lines
+ * only on the left), 2 replace (changed lines). One byte each.
+ *
+ * # Safety
+ * `out_kinds` must be valid for `count` bytes (or null with `count` 0); `written` for a write.
+ */
+DsStatus ds_text_get_section_kinds(DsHandle h,
+                                   uint32_t first,
+                                   uint32_t count,
+                                   uint8_t *out_kinds,
+                                   uint32_t *written);
+
+/**
+ * The first row of the next (`dir` 0) or previous (`dir` 1) section of `kind` (see
+ * `ds_text_get_section_kinds`), counting from `from_row` inclusive. `DS_E_NOT_FOUND` at the ends.
+ *
+ * # Safety
+ * `out_row` must be valid for a write.
+ */
+DsStatus ds_text_find_section(DsHandle h,
+                              uint32_t from_row,
+                              uint8_t dir,
+                              uint8_t kind,
+                              uint32_t *out_row);
+
+/**
+ * Finds `query` (UTF-8) in the lines of the rows from `from_row` inclusive, forwards (`dir` 0) or
+ * backwards (`dir` 1). `flags`: 1 case sensitive, 2 whole word, 4 regular expression, 8 skip the
+ * left side, 16 skip the right side. `DS_E_NOT_FOUND` when there is no match; a bad regular
+ * expression is `DS_E_INVALID_ARG`.
+ *
+ * # Safety
+ * `query` must be valid for its length; `out_hit` for a write.
+ */
+DsStatus ds_text_find(DsHandle h,
+                      DsStr8 query,
+                      uint32_t flags,
+                      uint32_t from_row,
+                      uint8_t dir,
+                      DsFindHit *out_hit);
+
+/**
+ * Applies a patch (backlog E11.5-S16): a unified diff or git mailbox patch, SEARCH/REPLACE blocks,
+ * JSON Patch (RFC 6902) or a byte script, to the files under `root`, or to the text given as
+ * `text`. All or nothing unless `partial`; `dryRun` writes nothing. The request is
+ * [`core_tools::apply::ApplyRequest`] (`patch`, `format`, `root`, `target`, `text`, `strip`,
+ * `reverse`, `dryRun`, `fuzz`, `ignoreWhitespace`, `partial`, `maxFileBytes`); the report has `ok`,
+ * `written`, `format`, `files[]` (per file the hunks, blocks or operations with their verdicts)
+ * and `error`. A patch that does not apply is a successful call with `ok: false`.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_patch_apply(DsStr8 request, DsBuf *out_report);
+
+/**
+ * JSON Patch (RFC 6902) on documents given in the request: `{"op":"diff","left":..,"right":..}`
+ * answers `{"ok":true,"patch":[..]}`, `{"op":"apply","doc":..,"patch":[..]}` answers
+ * `{"ok":true,"doc":..}` or `{"ok":false,"error":"operation 2: ...","index":2}`.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_json_patch(DsStr8 request, DsBuf *out_report);
+
+/**
+ * Which bytes differ between two files (the report for a binary file that a line diff calls
+ * "Binary files differ"): `{identical, leftLen, rightLen, differingBytes, runs[{offset, left,
+ * right}], truncated, text}`, where `text` is `fc /b`, `cmp -l` or offset-script text (the script
+ * can be applied with `ds_patch_apply`, format `byteScript`). An unreadable file is a failed call.
+ *
+ * # Safety
+ * `request` must be valid for its length; `out_report` for a write (free with `ds_buf_free`).
+ */
+DsStatus ds_bytes_diff(DsStr8 request, DsBuf *out_report);
 
 #endif  /* DIFFSYNC_H */

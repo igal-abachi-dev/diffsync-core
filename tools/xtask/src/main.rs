@@ -103,6 +103,7 @@ fn allowed() -> BTreeMap<&'static str, BTreeSet<&'static str>> {
             ],
         ),
         ("core-ffi", ffi),
+        ("diffsync-shell", vec!["core-tools"]),
         ("dsdev", ALL_CORE.to_vec()),
         ("xtask", vec!["core-base", "core-vfs", "core-glob"]),
         (

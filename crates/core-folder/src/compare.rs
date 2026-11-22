@@ -69,6 +69,7 @@ pub fn check_roots(
     lp: &VPath,
     right: &dyn Vfs,
     rp: &VPath,
+    allow_unchecked: bool,
 ) -> Result<(Option<RootsRelation>, Vec<String>, bool)> {
     let rel = roots_relation(left, lp, right, rp)?;
     let mut warnings = Vec::new();
@@ -87,8 +88,20 @@ pub fn check_roots(
         }
         Some(RootsRelation::Disjoint) => {}
         None => {
-            // the backend has no file IDs, so nesting cannot be ruled out (plan.md §9.7)
-            warnings.push("could not check whether the folders overlap (no file IDs)".to_string());
+            // the backend has no file IDs, so nesting cannot be ruled out (plan.md §9.7). Decision
+            // D68: that blocks sync and file operations, as a nested pair does, unless the caller
+            // has said it knows better (`allow_unchecked_roots`): a mirror between a folder and
+            // one inside it deletes files that were just compared
+            if allow_unchecked {
+                warnings.push(
+                    "could not check whether the folders overlap (no file IDs); sync is allowed because allowUncheckedRoots is set".to_string(),
+                );
+            } else {
+                warnings.push(
+                    "could not check whether the folders overlap (no file IDs): sync and file operations are blocked (set allowUncheckedRoots to allow them)".to_string(),
+                );
+                blocked = true;
+            }
         }
     }
     Ok((rel, warnings, blocked))
@@ -113,6 +126,24 @@ fn side_info(e: &Entry, name_off: u32, name_len: u16) -> SideInfo {
 }
 
 impl FolderCompare {
+    /// Marks an item (and everything below it) as ignored, or takes the mark off (backlog
+    /// E11.5-S14.5). Ignored items are hidden by views that do not ask for them and left alone by
+    /// a sync plan; the root cannot be ignored.
+    pub fn set_ignored(&mut self, id: crate::NodeId, on: bool) -> core_base::Result<()> {
+        if id == 0 || id as usize >= self.tree.len() {
+            return Err(core_base::Error::invalid_argument(
+                "that item cannot be ignored",
+            ));
+        }
+        let n = self.tree.node_mut(id);
+        if on {
+            n.flags |= crate::tree::flag::IGNORED;
+        } else {
+            n.flags &= !crate::tree::flag::IGNORED;
+        }
+        Ok(())
+    }
+
     /// The root folder of one side.
     pub fn root_path(&self, left_side: bool) -> &VPath {
         if left_side {
@@ -156,7 +187,13 @@ impl FolderCompare {
         cancel: &CancelToken,
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<FolderCompare> {
-        let (_, warnings, sync_blocked) = check_roots(&*left, left_root, &*right, right_root)?;
+        let (_, warnings, sync_blocked) = check_roots(
+            &*left,
+            left_root,
+            &*right,
+            right_root,
+            rules.allow_unchecked_roots,
+        )?;
         for (v, r) in [(&left, left_root), (&right, right_root)] {
             match v.stat(r)? {
                 Some(e) if e.kind == Kind::Dir => {}

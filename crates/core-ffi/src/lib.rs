@@ -15,6 +15,7 @@
     clippy::missing_safety_doc
 )]
 
+pub mod edit;
 pub mod events;
 pub mod folder;
 pub mod options;
@@ -24,6 +25,7 @@ pub mod sync;
 #[cfg(feature = "test-panic")]
 pub mod testexports;
 pub mod text;
+pub mod tools;
 pub mod types;
 pub mod util;
 
@@ -32,15 +34,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
+pub use edit::{ds_text_edit, ds_text_save};
 pub use folder::{
     ds_folder_cancel, ds_folder_compare_content, ds_folder_node_info, ds_folder_node_name,
-    ds_folder_open, ds_folder_refresh, ds_folder_report, ds_folder_status, ds_view_create,
-    ds_view_expand, ds_view_get_rows, ds_view_row_count, ds_view_set,
+    ds_folder_open, ds_folder_refresh, ds_folder_report, ds_folder_set_ignored, ds_folder_status,
+    ds_view_create, ds_view_expand, ds_view_get_rows, ds_view_row_count, ds_view_set,
 };
 pub use status::*;
 pub use sync::{
-    ds_fileops_copy, ds_fileops_delete, ds_fileops_move, ds_job_answer, ds_job_cancel,
-    ds_job_get_question, ds_job_pause, ds_job_result, ds_job_resume, ds_job_status,
+    ds_fileops_copy, ds_fileops_delete, ds_fileops_move, ds_fileops_rename, ds_job_answer,
+    ds_job_cancel, ds_job_get_question, ds_job_pause, ds_job_result, ds_job_resume, ds_job_status,
     ds_maintenance_sweep, ds_plan_execute, ds_plan_get_actions, ds_plan_get_prompts,
     ds_plan_report, ds_plan_set_op, ds_plan_summary, ds_sync_plan,
 };
@@ -49,12 +52,19 @@ pub use text::{
     ds_text_get_overview, ds_text_get_rows, ds_text_get_sections, ds_text_open, ds_text_recompare,
     ds_text_status,
 };
+pub use tools::{
+    ds_bytes_diff, ds_diff_run, ds_diff_texts, ds_json_patch, ds_merge_files, ds_merge3,
+    ds_patch_apply, ds_shell_selection_clear, ds_shell_selection_get, ds_shell_selection_set,
+    ds_text_find, ds_text_find_section, ds_text_get_folds, ds_text_get_section_kinds,
+    ds_tool_default_ignore, ds_tool_is_ignored, ds_tool_parse_args, ds_volume_info,
+};
 pub use types::*;
 
-/// The ABI version: `major << 16 | minor`. Frozen at 1.0 (backlog E10-S3, docs/abi.md): additive
-/// changes bump the minor, a breaking change would bump the major and is avoided.
+/// The ABI version: `major << 16 | minor`. 1.0 was frozen at backlog E10-S3 (docs/abi.md); 1.1 added
+/// the integration exports of E11.5. Additive changes bump the minor, a breaking change would bump
+/// the major and is avoided.
 pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 0;
+pub const ABI_MINOR: u32 = 2;
 
 /// The default folder for execution logs, set by `ds_init`.
 pub static DEFAULT_LOG_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
