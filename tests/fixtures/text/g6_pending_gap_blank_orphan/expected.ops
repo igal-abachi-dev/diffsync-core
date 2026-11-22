@@ -1,0 +1,4 @@
+# G6 (ALIGN-1.3): a blank line joins the pending gap and becomes an unimportant orphan. Verified with refmodel.py and plan.md 11.3.
+0 0 1
+1 - 1
+2 1 1

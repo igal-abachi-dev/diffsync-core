@@ -1,0 +1,5 @@
+# G4 (ALIGN-1.5): a lone inserted line; DP score 260. Verified with refmodel.py and plan.md 11.3.
+0 0 1
+1 1 1
+- 2 1
+2 3 1

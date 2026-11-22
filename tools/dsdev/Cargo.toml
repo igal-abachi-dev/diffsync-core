@@ -1,0 +1,17 @@
+[package]
+name = "dsdev"
+description = "Developer CLI for debugging, golden values and review pages (not the product CLI)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-base.workspace = true
+core-text.workspace = true
+core-diff.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "readme-tests"
+description = "Compiles and runs the Rust examples of README.md as doc tests (backlog E11-S5.1)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+# the README is the only content; nothing here is shipped
+doctest = true
+
+[dependencies]
+core-base.workspace = true
+core-vfs.workspace = true
+core-diff.workspace = true
+core-folder.workspace = true
+core-sync.workspace = true
+parking_lot.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

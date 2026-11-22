@@ -1,0 +1,5 @@
+# D1 (ALIGN-1.4): a run crossing the window edge is clipped by one line, committed, and continues in the next window. Hand-derived and checked with refmodel.py.
+0 0 4
+4 4 11
+15 15 9
+24 24 3

@@ -1,0 +1,5 @@
+# G12 (ALIGN-1.1): kind None = skew 1, closeness off, in-order pairing. Verified with refmodel.py and plan.md 11.3.
+0 0 1
+1 1 1
+2 2 1
+- 3 1

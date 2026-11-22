@@ -1,0 +1,2 @@
+# ALIGN-1.4: a run of weight exactly 500 is not kept (one DP op). Hand-derived and checked with refmodel.py.
+0 0 27

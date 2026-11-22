@@ -1,0 +1,4 @@
+# D2 (ALIGN-1.6): equal-hash closeness is 280 for identical lines and 279 for a whitespace twin. Hand-derived and checked with refmodel.py.
+0 0 1
+1 - 1
+2 1 1

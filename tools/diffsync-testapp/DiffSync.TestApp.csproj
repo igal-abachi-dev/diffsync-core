@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>diffsync-testapp</AssemblyName>
+    <RootNamespace>DiffSync.TestApp</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot>true</PublishAot>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <!-- Tmds.DBus.Protocol comes with Avalonia.Desktop for Linux only; this app targets Windows -->
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- the DLL to ship next to the exe -->
+    <DiffSyncDll Condition="'$(DiffSyncDll)' == ''">$(MSBuildThisFileDirectory)..\..\target\release\diffsync_core.dll</DiffSyncDll>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.9" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.9" />
+    <ProjectReference Include="..\..\bindings\csharp\DiffSync.Native\DiffSync.Native.csproj" />
+    <None Include="$(DiffSyncDll)" Condition="Exists('$(DiffSyncDll)')" Link="diffsync_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+description = "Repository automation: dependency-direction check, bindings, glob-diff, benches."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+core-base.workspace = true
+core-vfs.workspace = true
+core-glob.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+cbindgen.workspace = true
+csbindgen.workspace = true
+
+[lints]
+workspace = true

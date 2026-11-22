@@ -1,0 +1,3 @@
+# G13 (ALIGN-1.4, B2): the big run is found at (10,10) when its weight reaches 5040 >= 5000; the 10x10 header block before it is aligned first. HAND-DERIVED (plan.md 11.3).
+0 0 10
+10 10 100

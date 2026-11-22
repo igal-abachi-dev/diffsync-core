@@ -2,7 +2,7 @@
 
 # diffsync-core
 
-**A fast,  Rust engine for text compare, folder compare and folder sync.**
+**A fast, Rust engine for text compare, folder compare and folder sync.**
 
 Written in Rust, exposed through a small, safe stable C ABI, and built to power desktop
 compare tools.

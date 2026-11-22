@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Warnings fail through `clippy -D warnings`. RUSTFLAGS is not set here on purpose: it would
+  # replace the static-CRT flags from .cargo/config.toml.
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One matrix covers fmt, clippy and tests. Windows x64 is the primary target; Linux and
+  # macOS run the portable-VFS tests; Windows ARM64 only builds (no runner executes it).
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, target: x86_64-pc-windows-msvc, test: true }
+          - { name: linux, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, test: true }
+          - { name: macos, os: macos-latest, target: aarch64-apple-darwin, test: true }
+          - { name: windows-arm64, os: windows-latest, target: aarch64-pc-windows-msvc, test: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: fmt
+        if: matrix.test
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+      - name: build
+        if: ${{ !matrix.test }}
+        run: cargo build --workspace --target ${{ matrix.target }}
+      - name: test
+        if: matrix.test
+        run: cargo test --workspace --target ${{ matrix.target }}
+      - name: dependency direction
+        if: matrix.test
+        run: cargo xtask check-deps
+      - name: decision ledger is pinned by tests
+        if: matrix.test
+        run: cargo xtask ledger
+      - name: imara-diff is not in the release tree
+        if: matrix.test
+        run: cargo xtask check-release-deps
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # Miri runs on the pure crates. core-base today; core-text (minus mmap), core-diff join as
+  # they gain pure code (backlog E0-S3.3, plan.md §12.1).
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo miri test -p core-base
+        env:
+          # Sleeps in the concurrency tests are slow under miri; isolation must stay on.
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+
+  # --- Placeholders, enabled by later epics (E0-S3.4); `bindings` is live since E9-S7 -------------------------------------
+  bindings:
+    name: bindings --check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo xtask bindings --check
+
+  # E10: the managed binding and the test app against the real DLL
+  csharp:
+    name: csharp (DiffSync.Native tests + test app self test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p core-ffi
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: cargo build -p core-ffi
+      - run: dotnet test bindings/csharp/DiffSync.Native.Tests -c Debug
+      - run: dotnet run -c Release --project tools/diffsync-testapp -- --selftest
+
+  bench:
+    name: bench
+    # Budgets (plan §12.2) must always be met. The 10% regression gate compares with the figures
+    # of the last run on `main` on the same runner type (a baseline from another machine means
+    # nothing), kept in the Actions cache. Backlog E11-S2.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache/restore@v4
+        with:
+          path: bench-baseline.json
+          key: bench-baseline-${{ runner.os }}-never-matches
+          restore-keys: bench-baseline-${{ runner.os }}-
+      - run: cargo xtask bench --compare bench-baseline.json --save bench-new.json
+      - name: keep the figures of main as the next baseline
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: Copy-Item bench-new.json bench-baseline.json -Force
+      - uses: actions/cache/save@v4
+        if: ${{ github.ref == 'refs/heads/main' }}
+        with:
+          path: bench-baseline.json
+          key: bench-baseline-${{ runner.os }}-${{ github.run_id }}
+
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - name: 30 s per target (backlog E11-S1)
+        run: |
+          for t in align_small_skew text_decode glob_patterns options_json; do
+            cargo fuzz run $t -- -max_total_time=30 -rss_limit_mb=2048
+          done
+        working-directory: fuzz
+      - name: random FFI calls (stands in for an FFI fuzz target: a cdylib cannot link under libFuzzer)
+        run: cargo test -p core-ffi --features test-panic --test random_calls --release
+        env:
+          DS_FFI_ROUNDS: "2000"

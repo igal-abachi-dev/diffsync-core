@@ -1,0 +1,12 @@
+fn compute_total(items: &[Item], tax: f64) -> f64 {
+    let mut total = 0.0;
+    total += item_0.unit_price * item_0.qty;
+    total += item_1.price * item_1.qty;
+    total += item_2.price * item_2.qty;
+    total += item_3.price * item_3.qty;
+    total += item_4.price * item_4.qty;
+    total += item_5.price * item_5.qty;
+    total += item_6.price * item_6.qty;
+    total += item_7.price * item_7.qty;
+    total * (1.0 + tax)
+}

@@ -1,0 +1,6 @@
+# D1 (ALIGN-1.4): a closed gap larger than the skew slides window by window. Hand-derived and checked with refmodel.py.
+0 0 1
+1 1 10
+11 11 10
+21 21 10
+31 31 1

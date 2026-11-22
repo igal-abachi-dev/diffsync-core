@@ -1,0 +1,3 @@
+int x = 10;
+bar_baz();
+int y = 20;

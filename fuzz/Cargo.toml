@@ -1,0 +1,56 @@
+[package]
+name = "diffsync-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Own workspace: fuzzing needs nightly + cargo-fuzz, the main workspace builds on stable.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+core-base = { path = "../crates/core-base" }
+core-text = { path = "../crates/core-text" }
+core-diff = { path = "../crates/core-diff" }
+core-glob = { path = "../crates/core-glob" }
+core-folder = { path = "../crates/core-folder" }
+core-sync = { path = "../crates/core-sync" }
+
+[[bin]]
+name = "empty"
+path = "fuzz_targets/empty.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "align_small_skew"
+path = "fuzz_targets/align_small_skew.rs"
+test = false
+doc = false
+bench = false
+
+
+[[bin]]
+name = "text_decode"
+path = "fuzz_targets/text_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glob_patterns"
+path = "fuzz_targets/glob_patterns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "options_json"
+path = "fuzz_targets/options_json.rs"
+test = false
+doc = false
+bench = false

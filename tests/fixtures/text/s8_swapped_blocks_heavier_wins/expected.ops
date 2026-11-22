@@ -1,0 +1,4 @@
+# ALIGN-1.4 selection: of two crossing runs the heavier is kept, the other dropped. Hand-derived and checked with refmodel.py.
+0 - 10
+10 0 12
+- 12 10

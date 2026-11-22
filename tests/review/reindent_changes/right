@@ -1,0 +1,30 @@
+if (x0 > 0) {
+      call_0(x0);
+}
+if (x1 > 1) {
+      call_1(x1);
+}
+if (x2 > 2) {
+      call_2(x2);
+}
+if (x3 > 3) {
+      call_3(x3);
+}
+if (x4 > 4) {
+      call_4(x4);
+}
+if (x5 > 5) {
+      call_5(x5);
+}
+if (x6 > 6) {
+      call_6(x6);
+}
+if (x7 > 7) {
+      call_7(x7);
+}
+if (x8 > 8) {
+      call_8(x8);
+}
+if (x9 > 9) {
+      call_9(x9);
+}
