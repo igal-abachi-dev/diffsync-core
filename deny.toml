@@ -1,0 +1,55 @@
+# cargo-deny configuration (E0-S3.2; plan.md §2.1). Run: cargo deny check
+
+[graph]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Allow-list: permissive licenses only. Anything copyleft (GPL/AGPL/LGPL) fails.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+# `cbindgen` (MPL-2.0, file-level copyleft) generates include/diffsync.h and runs only inside
+# `cargo xtask bindings`. It is a build tool: it is never linked into diffsync_core.dll and none
+# of its files are modified or shipped. A narrow exception, not a general MPL-2.0 allowance
+# (owner to confirm, backlog E11-S5.2).
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cbindgen" },
+]
+
+[licenses.private]
+# Our own crates have no license field yet (E11-S5 decides it); they are `publish = false`.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# `imara-diff` is a dev-dependency only (plan.md §5.3, E3-S4.4). The release dependency
+# tree of core-ffi must never contain it; CI enforces that with `cargo xtask check-release-deps`.
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

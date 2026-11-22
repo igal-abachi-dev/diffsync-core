@@ -2,9 +2,9 @@
 
 # diffsync-core
 
-**A fast, safe, embeddable engine for text compare, folder compare and folder sync.**
+**A fast,  Rust engine for text compare, folder compare and folder sync.**
 
-Written in Rust, exposed through a small, stable C ABI, and built to power desktop
+Written in Rust, exposed through a small, safe stable C ABI, and built to power desktop
 compare tools.
 
 [![CI](https://github.com/OWNER/diffsync-core/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/diffsync-core/actions/workflows/ci.yml)
@@ -77,7 +77,7 @@ an Avalonia app, a native shell extension, a CLI or your own tool.
 
 ### Engine qualities
 - No per-line heap allocation. Compact arenas: about 16 bytes per text line and about
-  160 bytes per folder entry.
+  136 bytes per folder entry.
 - The UI thread never blocks: reads take microseconds, and work runs on worker pools.
 - A panic-safe C ABI with generation-checked handles. A buggy caller gets an error code,
   not a crash.
@@ -92,73 +92,116 @@ core-diff   = { git = "https://github.com/OWNER/diffsync-core" }
 core-folder = { git = "https://github.com/OWNER/diffsync-core" }
 core-sync   = { git = "https://github.com/OWNER/diffsync-core" }
 core-vfs    = { git = "https://github.com/OWNER/diffsync-core" }
+core-base   = { git = "https://github.com/OWNER/diffsync-core" }
 ```
+
+These crates are the engine behind the C ABI; the examples below are compiled and run as
+doc tests (`cargo test -p readme-tests`).
 
 **Compare two text files**
 
 ```rust
-use core_diff::session::{DiffRow, DocSpec, EventSink, TextCompare, TextOptions};
+use core_diff::{DiffRow, DocSpec, RowKind, Status, TextCompare, TextOptions};
+# let dir = tempfile::tempdir()?;
+# std::fs::write(dir.path().join("left.txt"), "one
+two
+three
+")?;
+# std::fs::write(dir.path().join("right.txt"), "one
+2
+three
+four
+")?;
+# let (left, right) = (dir.path().join("left.txt"), dir.path().join("right.txt"));
 
+// Standard alignment, skew 2000, closeness on. No event sink: we poll instead.
 let cmp = TextCompare::start(
-    DocSpec::path("left.txt"),
-    DocSpec::path("right.txt"),
-    TextOptions::default(),          // Standard alignment, skew 2000, closeness on
-    EventSink::none(),
+    DocSpec::Path(left),
+    DocSpec::Path(right),
+    TextOptions::default(),
+    None,
 )?;
-
-// Rows arrive progressively; here we just wait for the end.
-while !cmp.status().is_finished() {
-    std::thread::sleep(std::time::Duration::from_millis(10));
-}
+cmp.wait(); // a UI would keep pulling rows while this runs; they arrive window by window
+assert_eq!(cmp.status(), Status::Done);
 
 let stats = cmp.stats();
 println!("{} important difference lines in {} sections",
          stats.important_diff, stats.important_sections);
 
-let mut rows = vec![DiffRow::default(); 50];
+let mut rows = vec![DiffRow { left: 0, right: 0, kind: RowKind::Same }; 50];
 let n = cmp.rows(0, &mut rows);
 for row in &rows[..n] {
-    println!("{:?}  {:?} | {:?}", row.kind, row.left, row.right);
+    println!("{:<12} {:?} | {:?}", row.kind.name(), row.left_opt(), row.right_opt());
 }
+# assert!(stats.sections >= 1 && n >= 4);
+# Ok::<(), core_base::Error>(())
 ```
 
-**Compare two folders and preview a mirror**
+**Compare two folders, preview a mirror, and run it**
 
 ```rust
+use std::sync::Arc;
+use core_base::CancelToken;
 use core_folder::{FolderCompare, FolderRules};
-use core_sync::{SyncPreset, SyncRules};
-use core_vfs::LocalVfs;
+use core_sync::{ExecOverrides, Preset, SyncRules, build_plan, start_sync};
+use core_vfs::{VPath, Vfs};
+# let dir = tempfile::tempdir()?;
+# let (a, b) = (dir.path().join("site"), dir.path().join("backup"));
+# std::fs::create_dir_all(&a)?; std::fs::create_dir_all(&b)?;
+# std::fs::write(a.join("index.html"), "<h1>new</h1>")?;
+# std::fs::write(b.join("old.html"), "stale")?;
+# // `local` opens a folder: LocalWin32 on Windows, LocalStd elsewhere
+# fn local(p: &std::path::Path) -> Arc<dyn Vfs> {
+#     #[cfg(windows)]
+#     { Arc::new(core_vfs::LocalWin32::new(core_vfs::VfsRoot::parse_windows(p.to_str().unwrap()).unwrap())) }
+#     #[cfg(not(windows))]
+#     { Arc::new(core_vfs::LocalStd::new(p)) }
+# }
 
-let vfs = LocalVfs::shared();
-let mut rules = FolderRules::default();
-rules.exclude_folders = vec!["node_modules".into(), ".git".into()];
+let rules = FolderRules::default();
+let cmp = FolderCompare::compare(
+    local(&a), &VPath::root(),      // left
+    local(&b), &VPath::root(),      // right
+    rules,
+    &CancelToken::new(),
+)?;
 
-let cmp = FolderCompare::start(vfs.clone(), r"C:\work\site", vfs, r"E:\backup\site",
-                               rules, EventSink::none())?;
-cmp.wait()?;
+// The plan is plain data. Nothing has been written yet.
+let plan = build_plan(&cmp, &SyncRules::from_preset(Preset::MirrorToRight), None)?;
+let s = plan.summary;
+println!("copy {} ({} bytes) -> right, delete {} on right, {} conflicts",
+         s.copies_to_right, s.bytes_to_right, s.deletes_right, s.conflicts);
 
-let plan = core_sync::build_plan(&cmp, &SyncRules::from_preset(SyncPreset::MirrorToRight), None)?;
-println!("{}", plan.summary());      // e.g. "copy 412 (1.8 GB) → right, delete 14 on right, 2 conflicts"
-
-// Nothing has been written yet. Execute only after the user approves the plan:
-// let job = plan.execute(Default::default(), EventSink::none())?;
+// Execute only after the user approved the plan. The job runs on its own thread and asks
+// questions (conflicts, files changed since the compare) instead of guessing.
+let shared = Arc::new(parking_lot::RwLock::new(cmp));
+let job = start_sync(&plan, &shared, ExecOverrides::default(), None)?;
+let result = job.wait();
+println!("{} done, {} skipped, {} failed", result.done, result.skipped, result.failed);
+# assert_eq!((result.done, result.failed), (2, 0));
+# assert!(b.join("index.html").exists() && !b.join("old.html").exists());
+# Ok::<(), core_base::Error>(())
 ```
 
 ### C# (Avalonia / .NET)
 
-The `DiffSync.Native` package wraps the C ABI with `SafeHandle`s, typed exceptions and
-events marshalled to the UI thread.
+`bindings/csharp/DiffSync.Native` wraps the C ABI with `SafeHandle`s, typed exceptions and
+an event pump that can post to the UI thread. This example is also a test
+(`ReadmeExample` in `DiffSync.Native.Tests`).
 
 ```csharp
 using DiffSync.Native;
 
+// Events arrive on core threads. `post` moves them to yours, e.g. Dispatcher.UIThread.Post.
 using var cmp = TextCompare.Open(@"C:\a\Program.cs", @"C:\b\Program.cs",
-                                 new TextOptions { Alignment = Alignment.Standard });
+    optionsJson: """{ "alignment": "standard" }""",
+    onEvent: e => { if (e.Kind == EventKind.Rows) { /* ask the view to repaint */ } },
+    post: action => action());
 
-cmp.RowsAvailable += (_, e) => Dispatcher.UIThread.Post(() => view.RowCount = e.RowCount);
-
-Span<DsTextRow> rows = stackalloc DsTextRow[100];
-int n = cmp.GetRows(firstRow: 0, rows);
+// Pull what the grid shows; the call never waits for the alignment.
+var rows = new TextRow[100];
+int n = cmp.GetRows(first: 0, rows);
+var status = cmp.Status;   // State, Rows, ImportantDiff, Sections, ...
 ```
 
 ### C
@@ -166,18 +209,26 @@ int n = cmp.GetRows(firstRow: 0, rows);
 ```c
 #include "diffsync.h"
 
+// Paths are UTF-16, options are UTF-8 JSON. `on_event` runs on a core thread.
+DsStr16 left  = { left16,  left_len  };   // const uint16_t* + length in code units
+DsStr16 right = { right16, right_len };
+DsStr8  opts  = { (const uint8_t*)"{}", 2 };
+
 DsHandle cmp;
-DsStatus st = ds_text_open(left16, right16, opts_json, on_event, user_ctx, &cmp);
-if (st != DS_OK) { char msg[512]; size_t need; ds_last_error(msg, sizeof msg, &need); /* … */ }
+DsStatus st = ds_text_open(left, right, opts, on_event, user_ctx, &cmp);
+if (st != DS_OK) {
+    uint8_t msg[512]; size_t need;
+    ds_last_error(msg, sizeof msg, &need);          /* two-call pattern if need > 512 */
+}
 
 DsTextRow rows[100]; uint32_t got;
 ds_text_get_rows(cmp, 0, 100, rows, &got);
-ds_close(cmp);
+ds_close(cmp);                                      /* after this, `on_event` never runs again */
 ```
 
 ## Architecture
 
-```
+```text
 ┌──────────────────────── DeltaForge (Avalonia, C#) ───────────────────────────┐
 │        DiffSync.Native: generated bindings + SafeHandles + events            │
 └────────────────────────────────────┬─────────────────────────────────────────┘
@@ -245,7 +296,7 @@ cargo test --workspace
 |---|---|
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Regenerate C header + C# bindings | `cargo xtask bindings` |
-| Benchmarks | `cargo bench -p core-diff` |
+| Benchmarks and budget check | `cargo xtask bench` |
 | Golden tests | `cargo run -p dsdev -- golden all` |
 | Side-by-side review page | `cargo run -p dsdev -- render <case> --html` |
 | License / advisory audit | `cargo deny check` |
@@ -267,18 +318,28 @@ The release DLL is built with a static CRT, so it has no Visual C++ runtime depe
 
 ## Performance
 
-Budgets enforced by the benchmark suite on the reference machine (8 cores, NVMe,
-Windows 11). A regression of more than 10% fails CI.
+Budgets from the design (plan §12.2) and what `cargo xtask bench` measured on the development
+machine (Windows 11, NVMe). CI runs the same suite and fails when a budget is missed or a
+figure is more than 10% worse than the last run on `main`.
 
-| Scenario | Budget |
-|---|---|
-| Line indexing | ≥ 1 GB/s |
-| 2 × 100 MB near-identical logs: first 200 rows | ≤ 100 ms |
-| Same, full alignment | ≤ 1.5 s |
-| Viewport pull (100 rows + text + intraline) | ≤ 0.2 ms |
-| Folder scan, warm cache | ≥ 150 000 entries/s |
-| 1 M folder entries in memory | ≤ 160 MB |
-| Large file copy | within 5% of `robocopy` |
+| Scenario | Budget | Measured |
+|---|---|---|
+| Line indexing | ≥ 1 GB/s | 8.8 GB/s |
+| 2 × 100 MB near-identical logs: first 200 rows | ≤ 100 ms | 92 ms |
+| Same, full alignment | ≤ 1.5 s | 0.84 s |
+| 2 × 50k completely different lines | ≤ 3 s, ≤ 300 MB | 2.2 s, 17 MB peak for the whole process |
+| Viewport pull (100 rows + text + intraline) | ≤ 0.2 ms | 0.016 ms |
+| Folder scan, warm cache | ≥ 150 000 entries/s | 1.0 million entries/s on a real folder (100 000 files), 2.0 million on the in-memory file system |
+| 1 M folder entries in memory | ≤ 160 MB | 136 MB (the tree: nodes and names) |
+| Content compare (Binary, CRC-32) | ≥ 90% of sequential read speed | 1.1 to 1.5 × the NVMe's unbuffered read speed (warm cache); 0.90 to 0.97 × on a SATA HDD with a cold cache |
+| 1 GiB file copy | within 5% of `robocopy` | 0.71 × robocopy's time |
+
+The figures are one machine's. The NVMe content-compare figures are warm-cache (the files are in
+the page cache), so they show that the engine is not the bottleneck; the reference is an unbuffered
+read of the same files. The HDD figures empty the cache first. The compare reads the two files at
+the same time, except when both are on rotating disks, where that made it a quarter slower and it
+reads them one after the other. The 1M-node memory figure is the folder tree (nodes and names), not
+the process's peak.
 
 ## Design notes
 
@@ -331,7 +392,7 @@ detected by file ID · folders vanishing mid-scan · access-denied subfolders.
 | Platform | Status |
 |---|---|
 | Windows 10/11 x64 | Primary; full Win32 backend |
-| Windows 11 ARM64 | Built and tested in CI |
+| Windows 11 ARM64 | Built in CI (not run: the hosted runners are x64) |
 | Linux, macOS | Engine and portable `std` backend; tested in CI |
 
 ## Roadmap

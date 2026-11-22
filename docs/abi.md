@@ -5,8 +5,9 @@ The C ABI of `diffsync_core.dll` (crate `core-ffi`). The header `include/diffsyn
 checked in; CI runs `cargo xtask bindings --check`. This page explains the conventions behind
 them. When this page and `plan.md` §10 disagree, `plan.md` wins.
 
-ABI version: **0.9** (`ds_abi_version()` = `major << 16 | minor`). Major stays 0 until the ABI
-is frozen at E10-S3; then it becomes 1.0.
+ABI version: **1.0** (`ds_abi_version()` = `major << 16 | minor`). Frozen at E10-S3 after the
+Avalonia proof (`tools/diffsync-testapp`, `bindings/csharp`): see "Versioning policy" for what
+may still change.
 
 ## Conventions
 
@@ -59,36 +60,46 @@ typedef void (*DsEventFn)(void* user, DsHandle src, uint32_t kind, uint64_t a, u
 
 | Kind | Value | `a` | `b` |
 |---|---|---|---|
-| `DS_EV_STATE` | 1 | text: state code; folder: 1 done / 2 failed / 3 cancelled; job: 2 finished | 0 |
+| `DS_EV_STATE` | 1 | text: state code (255 = not known yet, call `ds_text_status`); folder: 1 done / 2 failed / 3 cancelled; job: 2 finished | 0 |
 | `DS_EV_ROWS` | 2 | rows published so far (text) | 0 |
 | `DS_EV_PROGRESS` | 3 | done | total (folder: items; job: steps) |
 | `DS_EV_NODE` | 4 | nodes updated | tree revision |
 | `DS_EV_QUESTION` | 5 | question id | 0 changed since compare / 1 failed |
-| `DS_EV_LOG` | 6 | level | 0 |
+| `DS_EV_LOG` | 6 | reserved (not sent in 1.0) | 0 |
 
-Contract:
+Contract (decision D51):
 
-* Called on **core worker threads only**, never on the caller's thread and never from inside
-  another API call.
+* Called on **core threads only**: never on the thread of an API call, even for an event that a
+  call itself produces (for example the state change of `ds_text_recompare`): that one is
+  delivered from a short-lived core thread.
+* **Serialised and ordered.** Callbacks of one handle never run concurrently and arrive in the
+  order the events were produced.
 * Coalesced to **at most one event per kind per 16 ms** (60 Hz). Events that are held back go out
-  with the next one; state changes and questions are never held.
+  with the next one. State changes, questions and the final event of a session or job are never
+  held; `DS_EV_PROGRESS` and `DS_EV_NODE` of a running job may be.
 * No lock of the core is held while the callback runs. The callback may call any API function,
-  but it must **return quickly**: post to the UI thread. A callback that takes more than 500 ms is
-  reported to the log sink as a warning.
-* An event may arrive **before the open call returns** (the handle is not known yet). The core
-  holds it and sends it with the next event, so after opening, call the matching `status`
-  function once and do not rely on the first event alone.
-* `user` is passed back unchanged and must stay valid until the handle is closed.
+  including `ds_close` of its own handle, but it must **return quickly**: post to the UI
+  thread. A callback that takes more than 500 ms is reported to the log sink. A callback must
+  **not throw or panic**: an exception escaping an `extern "C"` function ends the process.
+* An event may be produced **before the open call returns** (the handle is not known yet). It is
+  held and delivered from a core thread right after the handle is known, so the host still gets
+  it; calling the matching `status` function once after opening is good practice anyway.
+* **After `ds_close(h)` returns, no callback of `h` runs or starts**, and `user` is not used
+  again: the host may free it. `ds_close` waits for a callback that is running on another thread
+  (and does not wait for the caller's own callback).
+* `DS_EV_LOG` is reserved and not sent in 1.0; use the log sink of `ds_init`.
+* The log sink may be called on the thread of the API call that found the problem (a warning
+  about that call's own arguments), unlike event callbacks.
 
 ## Library
 
 | Function | Notes |
 |---|---|
 | `uint32_t ds_abi_version(void)` | `major << 16 \| minor` |
-| `DsStatus ds_init(const DsInitOptions*)` | Optional. Worker threads of the shared pool, a log sink (`DsLogFn`), the default folder for execution logs. A second call returns `DS_E_BUSY` |
+| `DsStatus ds_init(const DsInitOptions*)` | Optional. Worker threads of the shared pool, a log sink (`DsLogFn`), the default folder for execution logs. A second call returns `DS_E_BUSY`. `worker_threads` above 1024 is `DS_E_INVALID_ARG`; it only takes effect if the shared pool was not used yet. `log_fn` may be called from several core threads at once, and `log_user` must stay valid for the life of the process (a log sink cannot be detached) |
 | `DsStatus ds_last_error(uint8_t* buf, size_t cap, size_t* needed)` | Two-call pattern, UTF-8 |
 | `void ds_buf_free(DsBuf)` | For every `DsBuf` the core returned |
-| `DsStatus ds_close(DsHandle)` | Closes any handle. Closing a running compare or job cancels it; nothing half-written is left |
+| `DsStatus ds_close(DsHandle)` | Closes any handle and stops its work: a running scan, session or job is cancelled (a copy stops at its next block and never leaves a half-written file). When it returns no callback of the handle runs or starts. A stale or closed handle is `DS_E_INVALID_HANDLE` |
 | `DsStatus ds_options_schema(DsBuf*)` | JSON Schema of the option sets `text`, `folder`, `sync`, `exec`, `view` |
 
 ## Text compare
@@ -99,7 +110,7 @@ viewport (about 100 rows) and never wait for the worker.
 
 | Function | Notes |
 |---|---|
-| `ds_text_open` | Paths are UTF-16. Loading errors show up as state 3 (failed) with the message in `ds_last_error` after `ds_text_status` |
+| `ds_text_open` | Paths are UTF-16 and must be absolute (a relative path would resolve against the process current directory: `DS_E_INVALID_ARG`). Loading errors show up as state 3 (failed) with the message in `ds_last_error` after `ds_text_status` |
 | `ds_text_status(h, DsTextStatus*)` | State (0 loading, 1 aligning, 2 done, 3 failed, 4 cancelled, 5 binary), rows so far, `generation`, the nine counters |
 | `ds_text_get_rows(h, first, count, DsTextRow*, &written)` | `count` rows from `first`; `written` may be less at the end |
 | `ds_text_get_sections(h, first, count, DsSection*, &written)` | Runs of difference rows |
@@ -108,7 +119,7 @@ viewport (about 100 rows) and never wait for the worker.
 | `ds_text_find_diff(h, from_row, dir, important_only, &row)` | `dir >= 0` next, `< 0` previous. `DS_E_NOT_FOUND` at the end |
 | `ds_text_get_overview(h, uint8_t* buckets, n)` | `n` overview buckets, 0 = equal, higher = more severe |
 | `ds_text_doc_info(h, side, DsDocInfo*)` | Encoding, BOM, endings, size. `DS_E_BUSY` until the file is loaded |
-| `ds_text_recompare(h, options_json)` | New alignment with other options; `generation` increases; old rows stay readable until replaced |
+| `ds_text_recompare(h, options_json)` | New alignment with other options. `generation` increases first; the rows of the old alignment are dropped when the call starts and the new ones appear progressively, so a host that sees 0 rows and a new generation knows it is a new alignment |
 | `ds_text_cancel(h)` | |
 
 ## Folder compare and views
@@ -158,6 +169,7 @@ an abort.
 | Function | Notes |
 |---|---|
 | `ds_plan_summary`, `ds_plan_get_actions`, `ds_plan_get_prompts`, `ds_plan_report`, `ds_plan_set_op` | Preview. Node ids are those of the folder compare |
+| `ds_maintenance_sweep(root, delete, &report)` | Plan §9.2: lists the `*.dctmp~` temp files a crash left under the absolute folder `root` (links are never entered) and, with `delete != 0`, removes them. Synchronous and a whole-tree walk: call it off the UI thread. Report JSON `{found:[{path,bytes}], deleted, errors:[{path,message}]}`, freed with `ds_buf_free` |
 | `ds_fileops_copy(items, dst, opts_json, cb, user, &job)` | `items` is a UTF-16 list of absolute paths; `dst` a folder. Options `overwrite`, `logDir`, `useRecycleBin`. A copy into itself, onto itself, or onto an existing name without `overwrite` is refused before anything runs |
 | `ds_fileops_move`, `ds_fileops_delete` | Move is a rename inside one volume, copy then delete across volumes (the delete waits for a verified copy). Deletes remove a folder only when it is empty afterwards |
 | `ds_job_status(job, DsJobStatus*)` | Progress; the counts when finished |
@@ -165,7 +177,22 @@ an abort.
 | `ds_job_pause`, `ds_job_resume`, `ds_job_cancel` | Cancel leaves no half-written file |
 | `ds_job_result(job, DsBuf*)` | JSON result of a finished job (`DS_E_BUSY` while running) |
 
-Closing a job's handle cancels it.
+Closing a job's handle cancels it (asynchronously; `ds_close` itself returns at once and no further event is delivered).
+
+## Exports beyond plan.md §10.2
+
+`ds_folder_report`, `ds_plan_get_prompts` and `ds_plan_report` are additions to the surface of
+`plan.md` §10.2 (JSON reports and the list of open prompts), and `ds_folder_node_info` returns a
+`DsDirRow` (the plan's `DsNodeInfo` is the same layout). `ds_plan_set_op` is refused with
+`DS_E_BUSY` once the plan was executed; the folder-level and plan-level locks are always taken in
+the order compare, then plan.
+
+Folder roots of `ds_folder_open` must be valid UTF-16 on Windows (an unpaired surrogate is `DS_E_INVALID_ARG`); on other systems a root is converted lossily and is not checked for being absolute.
+
+Paths in file operations (`ds_fileops_*`) must be absolute and must be valid UTF-16: an unpaired
+surrogate is `DS_E_INVALID_ARG` (a lossy conversion would name a different file). A `logDir`
+that is empty means "none given" (the folder from `ds_init`, if any); a relative one is
+`DS_E_INVALID_ARG`.
 
 ## Struct layouts
 
@@ -218,7 +245,9 @@ documented in `include/diffsync.h`.
   the end of an output struct, a new enum value, a new status code, a new JSON option) bump the
   minor. A **breaking** change (removing or renumbering anything, reordering fields, changing a
   signature) bumps the major and is avoided.
-* Output structs may grow at the end: the host passes a buffer of its own header's size and the
-  core writes the fields it knows. Input structs start with `struct_size`.
-* After the freeze (1.0), the header is tagged and `cargo xtask bindings --check` plus the C
-  smoke test guard the layout.
+* Node numbers (`ds_folder_refresh`, `ds_folder_compare_content`, the selection of `ds_sync_plan`) must exist in the tree: a number outside it is `DS_E_INVALID_ARG`.
+* `jobName` is part of a log file name: no `/`, `\`, `:` or `..`, at most 100 bytes (`DS_E_INVALID_ARG`).
+* **Output structs have a fixed size** within one major version (their sizes and offsets are asserted in the crate and in the C smoke test): a field is never appended to one. A new fact needs a new function or a new struct type. **Input structs** start with `struct_size`, so they can grow; the core refuses a `struct_size` smaller than the struct it knows and reads only the fields inside `struct_size` from a later minor on.
+* The 1.0 header is tagged `abi-1.0` when the repository is committed (E10-S3). From then on
+  `cargo xtask bindings --check` and the C smoke test (sizes and offsets of every struct) guard
+  the layout, and the `lifecycle` test pins the enum numbers.

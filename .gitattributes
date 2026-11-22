@@ -1,0 +1,12 @@
+# Source and docs are LF everywhere, whatever core.autocrlf says on the machine.
+* text=auto eol=lf
+
+# Test fixtures contain deliberate CR, LF, CRLF, BOMs and non-UTF-8 bytes (encoding corpus,
+# golden inputs). Git must never convert them: a changed byte changes the test.
+tests/fixtures/** -text
+tests/review/** -text
+
+# Binary files
+*.bin binary
+*.dll binary
+*.pdb binary
